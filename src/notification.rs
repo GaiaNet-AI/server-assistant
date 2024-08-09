@@ -19,14 +19,14 @@ pub(crate) async fn periodic_notifications(subscribers: Subscribers, interval: u
     let client = Client::new();
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval));
 
-    // TODO: Replace this with a more meaningful message
-
-    let message = Notification {
-        message: "Hello, this is a test notification!".to_string(),
-    };
-
     // Send notifications to all subscribers at the specified interval
     loop {
+        // TODO: Replace this with a more meaningful message
+
+        let message = Notification {
+            message: "Hello, this is a test notification!".to_string(),
+        };
+
         interval.tick().await;
         let subs = subscribers.read().await;
         for url in subs.iter() {
