@@ -31,6 +31,9 @@ struct Cli {
     /// Socket address of server assistant
     #[arg(long, default_value = DEFAULT_ASSISTANT_SOCKET_ADDRESS)]
     socket_addr: String,
+    /// Interval in seconds for sending notifications
+    #[arg(short, long, default_value = "10")]
+    interval: u64,
 }
 
 #[tokio::main]
@@ -51,12 +54,14 @@ async fn main() -> Result<(), ServerError> {
         .parse::<SocketAddr>()
         .map_err(|e| ServerError::SocketAddr(e.to_string()))?;
 
+    // notification interval
+    let interval = cli.interval;
+
     let subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
-    // let message = "Hello, this is a test notification!";
 
     let subscribers_clone = Arc::clone(&subscribers);
     tokio::spawn(async move {
-        periodic_notifications(subscribers_clone).await;
+        periodic_notifications(subscribers_clone, interval).await;
     });
 
     let make_svc = make_service_fn(move |_| {
