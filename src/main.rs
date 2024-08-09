@@ -1,7 +1,7 @@
 use hyper::client::HttpConnector;
 use hyper::{
     service::{make_service_fn, service_fn},
-    Body, Client, Method, Request, Response, Server,
+    Body, Client, Method, Request, Response, Server, Uri,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -63,9 +63,29 @@ async fn periodic_notifications(subscribers: Subscribers) {
 }
 
 // Forward the request to the target server and return the response to the client
+// async fn forward(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+//     let client = Client::new();
+//     client.request(req).await
+// }
+
 async fn forward(req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
     let client = Client::new();
-    client.request(req).await
+
+    // retrieve the path and query from the original request
+    let path_and_query = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("");
+    // construct forwarding uri
+    let uri_string = format!("http://localhost:10086{}", path_and_query);
+    let uri = Uri::try_from(uri_string).unwrap();
+
+    // decompose original request
+    let (parts, body) = req.into_parts();
+    // construct forwarded request
+    let mut forwarded_req = Request::from_parts(parts, body);
+    let forwarded_req_uri = forwarded_req.uri_mut();
+    *forwarded_req_uri = uri;
+
+    // send forwarded request
+    client.request(forwarded_req).await
 }
 
 // Handle the incoming request
