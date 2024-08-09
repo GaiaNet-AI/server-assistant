@@ -6,6 +6,12 @@ edition = "2021"
 [dependencies]
 hyper = { version = "0.14.25", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
-# tower = { version = "0.4.13", features = ["full"] }
 serde_json = "1.0.70"
 serde = { version = "1.0.205", features = ["derive"] }
+clap = { version = "4.4.6", features = ["cargo", "derive"] }
+thiserror = "1"
+anyhow = "1.0.80"
+
+[[bin]]
+name = "gaias"
+path = "src/main.rs"
