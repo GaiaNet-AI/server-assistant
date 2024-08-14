@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 // use std::collections::HashSet;
 use log::{error, info};
-use std::{io::Write, net::SocketAddr, sync::Arc};
+use std::{fs::File, io::Write, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 
 // type Subscribers = Arc<RwLock<HashSet<String>>>;
@@ -68,13 +68,33 @@ struct Cli {
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
+    /// log file
+    #[arg(long, default_value = "assistant.log")]
+    log: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
+    // parse the command line arguments
+    let cli = Cli::parse();
+
+    // create a new log file
+    let file = match File::create(&cli.log) {
+        Ok(file) => file,
+        Err(e) => {
+            error!("Failed to create log file: {}", e);
+
+            return Err(ServerError::Operation(format!(
+                "Failed to create log file: {}",
+                e
+            )));
+        }
+    };
+
     // initialize the logger
-    // env_logger::init();
+    let target = Box::new(file);
     env_logger::Builder::from_default_env()
+        .target(env_logger::Target::Pipe(target))
         .format(|buf, record| {
             writeln!(
                 buf,
@@ -88,9 +108,7 @@ async fn main() -> Result<(), ServerError> {
             )
         })
         .init();
-
-    // parse the command line arguments
-    let cli = Cli::parse();
+    info!("log file of server assistant: {}", &cli.log);
 
     // parse socket address of server assistant
     let assistant_addr = cli
@@ -300,7 +318,7 @@ async fn handle_request(
 
         forward(req, socket_addr).await
     } else if path == "/health" {
-        info!("Receive a request querying server health");
+        info!("Receive a request in health endpoint");
 
         // check if the server is healthy
         if let Some(health) = SERVER_HEALTH.get() {

@@ -105,52 +105,54 @@ pub(crate) async fn check_server_health(
             return Err(ServerError::Operation(err_msg));
         };
 
-        // Iterate over the new lines and analyze server health
-        for line in new_lines.lines() {
-            if let Ok(log_message) = LogMessage::from_str(line) {
-                if log_message.custom_message.starts_with("endpoint") {
-                    info!("{}", line);
-                    log_queue.push_back(log_message);
+        if !new_lines.is_empty() {
+            // Iterate over the new lines and analyze server health
+            for line in new_lines.lines() {
+                if let Ok(log_message) = LogMessage::from_str(line) {
+                    if log_message.custom_message.starts_with("endpoint") {
+                        info!("{}", line);
+                        log_queue.push_back(log_message);
 
-                    if log_queue.len() > 1 {
-                        log_queue.pop_front();
-                    }
-                } else if log_message
-                    .custom_message
-                    .starts_with("response_is_success")
-                {
-                    info!("{}", line);
-                    log_queue.push_back(log_message);
+                        if log_queue.len() > 1 {
+                            log_queue.pop_front();
+                        }
+                    } else if log_message
+                        .custom_message
+                        .starts_with("response_is_success")
+                    {
+                        info!("{}", line);
+                        log_queue.push_back(log_message);
 
-                    if log_queue.len() > 1 {
-                        if let Some(log) = log_queue.pop_front() {
-                            if !log.custom_message.starts_with("endpoint") {
-                                if SERVER_HEALTH.get().is_none() {
-                                    SERVER_HEALTH
-                                        .set(RwLock::new(false))
-                                        .expect("Unable to set server health");
+                        if log_queue.len() > 1 {
+                            if let Some(log) = log_queue.pop_front() {
+                                if !log.custom_message.starts_with("endpoint") {
+                                    if SERVER_HEALTH.get().is_none() {
+                                        SERVER_HEALTH
+                                            .set(RwLock::new(false))
+                                            .expect("Unable to set server health");
+                                    } else {
+                                        let mut server_health = SERVER_HEALTH
+                                            .get()
+                                            .expect("Unable to get server health")
+                                            .write()
+                                            .await;
+
+                                        *server_health = false;
+                                    }
                                 } else {
-                                    let mut server_health = SERVER_HEALTH
-                                        .get()
-                                        .expect("Unable to get server health")
-                                        .write()
-                                        .await;
+                                    if SERVER_HEALTH.get().is_none() {
+                                        SERVER_HEALTH
+                                            .set(RwLock::new(true))
+                                            .expect("Unable to set server health");
+                                    } else {
+                                        let mut server_health = SERVER_HEALTH
+                                            .get()
+                                            .expect("Unable to get server health")
+                                            .write()
+                                            .await;
 
-                                    *server_health = false;
-                                }
-                            } else {
-                                if SERVER_HEALTH.get().is_none() {
-                                    SERVER_HEALTH
-                                        .set(RwLock::new(true))
-                                        .expect("Unable to set server health");
-                                } else {
-                                    let mut server_health = SERVER_HEALTH
-                                        .get()
-                                        .expect("Unable to get server health")
-                                        .write()
-                                        .await;
-
-                                    *server_health = true;
+                                        *server_health = true;
+                                    }
                                 }
                             }
                         }
@@ -179,8 +181,8 @@ pub(crate) async fn check_server_health(
 
         // Sleep for seconds specified in the interval
         let interval = interval.read().await;
-        info!("Sleeping for {} seconds", *interval);
         sleep(Duration::from_secs(*interval));
+        info!("Checking server health");
 
         // Check if there are new log entries
         if let Err(e) = file.seek(SeekFrom::End(0)) {
