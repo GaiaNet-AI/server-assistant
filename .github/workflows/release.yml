@@ -4,16 +4,9 @@ permissions:
   contents: write
 
 on:
-  workflow_dispatch: # manual trigger release
-    inputs:
-      create_release:
-        description: 'Create new release'
-        required: true
-        type: boolean
-      release_version:
-        description: "Version (e.g. 1.0.0)"
-        required: true
-        type: string
+  push:
+    tags:
+      - v[0-9]+.*
 
 jobs:
   create-release:
