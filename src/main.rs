@@ -5,7 +5,7 @@ mod health;
 use anyhow::Result;
 use clap::Parser;
 use error::ServerError;
-use health::check_server_health;
+use health::{check_server_health, is_file};
 use hyper::{
     // client::HttpConnector,
     // server,
@@ -23,8 +23,8 @@ use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 // use std::collections::HashSet;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use log::{error, info};
+use std::{io::Write, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 
 // type Subscribers = Arc<RwLock<HashSet<String>>>;
@@ -53,52 +53,81 @@ struct Payload {
 #[derive(Debug, Parser)]
 #[command(name = "Server Assistant", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "An assistant for LlamaEdge API Server")]
 struct Cli {
-    /// Socket address of LlamaEdge API Server instance
-    #[arg(short, long, default_value = DEFAULT_SERVER_SOCKET_ADDRESS)]
-    api_server_socket_addr: String,
     /// Socket address of server assistant
     #[arg(long, default_value = DEFAULT_ASSISTANT_SOCKET_ADDRESS)]
     socket_addr: String,
+    /// Socket address of LlamaEdge API Server instance
+    #[arg(long, default_value = DEFAULT_SERVER_SOCKET_ADDRESS)]
+    server_socket_addr: String,
+    /// Path to the `start-llamaedge.log` file
+    #[arg(long)]
+    server_log_file: String,
     /// Target URL for sending server information
     #[arg(long)]
     target_url: String,
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
-    /// Path to the `start-llamaedge.log` file
-    #[arg(long)]
-    server_log_file: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
+    // initialize the logger
+    // env_logger::init();
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} [{}] {} in {}:{}: {}",
+                chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                record.level(),
+                record.module_path().unwrap_or("unknown"),
+                record.file().unwrap_or("unknown"),
+                record.line().unwrap_or(0),
+                record.args()
+            )
+        })
+        .init();
+
     // parse the command line arguments
     let cli = Cli::parse();
 
-    // socket address
-    let server_addr = cli
-        .api_server_socket_addr
-        .parse::<SocketAddr>()
-        .map_err(|e| ServerError::SocketAddr(e.to_string()))?;
-    let server_addr = Arc::new(RwLock::new(server_addr));
-
-    // assistant socket address
+    // parse socket address of server assistant
     let assistant_addr = cli
         .socket_addr
         .parse::<SocketAddr>()
         .map_err(|e| ServerError::SocketAddr(e.to_string()))?;
+    info!("Socket address of server assistant: {}", &assistant_addr);
 
-    // target URL
+    // parse socket address of LlamaEdge API Server instance
+    let server_addr = cli
+        .server_socket_addr
+        .parse::<SocketAddr>()
+        .map_err(|e| ServerError::SocketAddr(e.to_string()))?;
+    info!("Socket address of API server: {}", &server_addr);
+    let server_addr = Arc::new(RwLock::new(server_addr));
+
+    // parse the path to the api server log file
+    let server_log_file = cli.server_log_file;
+    if !is_file(&server_log_file).await {
+        error!("Invalid log file path: {}", &server_log_file);
+        return Err(ServerError::ArgumentError(format!(
+            "Invalid log file path: {}",
+            &server_log_file
+        )));
+    }
+    info!("Log file of API server: {}", &server_log_file);
+    let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
+
+    // parse the target URL for sending server information
     let target_url = cli.target_url;
+    info!("Target URL for sending server info: {}", &target_url);
     let target_url: ServerInfoTargetUrl = Arc::new(RwLock::new(target_url));
 
-    // notification interval
+    // parse the interval of checking server health
     let interval = cli.interval;
+    info!("Interval of checking server health: {}", &interval);
     let interval: Interval = Arc::new(RwLock::new(interval));
-
-    // server log file
-    let server_log_file = cli.server_log_file;
-    let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
 
     // retrieve server information
     retrieve_server_info(Arc::clone(&server_addr)).await?;
@@ -109,8 +138,15 @@ async fn main() -> Result<(), ServerError> {
     let server_log_file_clone = Arc::clone(&server_log_file);
     let interval_clone = Arc::clone(&interval);
     tokio::spawn(async move {
-        check_server_health(server_log_file_clone, interval_clone).await;
-        // periodic_notifications(subscribers_clone, interval).await;
+        if let Err(e) = check_server_health(server_log_file_clone, interval_clone).await {
+            let err_msg = format!("Failed to check server health: {}", e);
+
+            error!("{}", &err_msg);
+
+            return Err(ServerError::Operation(err_msg));
+        }
+
+        Ok(())
     });
 
     let make_svc = make_service_fn(move |_| {
@@ -131,7 +167,7 @@ async fn main() -> Result<(), ServerError> {
     });
 
     // Run it with hyper on localhost:3000
-    println!("Listening on http://{}", &assistant_addr);
+    info!("Listening on http://{}", &assistant_addr);
 
     let server = Server::bind(&assistant_addr).serve(make_svc);
 
@@ -150,11 +186,11 @@ async fn handle_request(
 ) -> Result<Response<Body>, hyper::Error> {
     let path = req.uri().path();
     let response = if path == "/v1/info" {
-        println!("API Path: {}", path);
+        info!("Server Information Requested");
 
         // retrieve the target URL
         let url = target_url.read().await;
-        println!("Target URL: {}", &url);
+        info!("target URL: {}", &url);
 
         let server_info = match SERVER_INFO.get() {
             Some(info) => info,
@@ -165,36 +201,43 @@ async fn handle_request(
                 let body_bytes = match hyper::body::to_bytes(response.into_body()).await {
                     Ok(bytes) => bytes,
                     Err(e) => {
-                        return Ok(error::internal_server_error(format!(
-                            "Failed to read the body of the response: {}",
-                            e.to_string()
-                        )))
+                        let err_msg =
+                            format!("Failed to read the body of the response: {}", e.to_string());
+
+                        error!("{}", &err_msg);
+
+                        return Ok(error::internal_server_error(err_msg));
                     }
                 };
                 let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                     Ok(json) => json,
                     Err(e) => {
-                        return Ok(error::internal_server_error(format!(
+                        let err_msg = format!(
                             "Failed to parse the body of the response: {}",
                             e.to_string()
-                        )))
+                        );
+
+                        error!("{}", &err_msg);
+
+                        return Ok(error::internal_server_error(err_msg));
                     }
                 };
-                println!("Server Information: {:?}", server_info);
+                info!("Server Information: {}", server_info.to_string());
 
                 // store the server information
                 if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
-                    return Ok(error::internal_server_error(
-                        "Failed to store the server information".to_string(),
-                    ));
+                    let err_msg = "Failed to store the server information.";
+
+                    error!("{}", err_msg);
+
+                    return Ok(error::internal_server_error(err_msg));
                 }
 
                 SERVER_INFO.get().unwrap()
             }
         };
         let server_info = server_info.read().await;
-
-        println!("Server Information: {:?}", &server_info);
+        info!("Server Information: {:?}", &server_info);
 
         // send the request
         let client = Client::new();
@@ -257,12 +300,14 @@ async fn handle_request(
 
         forward(req, socket_addr).await
     } else if path == "/health" {
-        println!("Check server health");
+        info!("Receive a request querying server health");
 
         // check if the server is healthy
         if let Some(health) = SERVER_HEALTH.get() {
             let health = health.read().await;
             if !*health {
+                error!("Server is not healthy");
+
                 error::internal_server_error("Server is not healthy")
             } else {
                 // return response
@@ -277,14 +322,15 @@ async fn handle_request(
                     Err(e) => {
                         let err_msg = e.to_string();
 
-                        // log
-                        // error!(target: "stdout", "{}", &err_msg);
+                        error!(target: "stdout", "{}", &err_msg);
 
                         error::internal_server_error(err_msg)
                     }
                 }
             }
         } else {
+            error!("Server is not healthy");
+
             error::internal_server_error("Server is not healthy")
         }
     } else if path == "/subscribe" {
@@ -410,10 +456,11 @@ async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), Serve
     {
         Ok(req) => req,
         Err(e) => {
-            return Err(ServerError::Operation(format!(
-                "Failed to create a request: {}",
-                e.to_string()
-            )));
+            let err_msg = format!("Failed to create a request: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return Err(ServerError::Operation(err_msg));
         }
     };
 
@@ -422,45 +469,57 @@ async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), Serve
     let response = match client.request(req).await {
         Ok(resp) => resp,
         Err(e) => {
-            return Err(ServerError::Operation(format!(
-                "Failed to send a request: {}",
-                e.to_string()
-            )));
+            let err_msg = format!("Failed to send a request: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return Err(ServerError::Operation(err_msg));
         }
     };
     if !response.status().is_success() {
-        return Err(ServerError::Operation(format!(
+        let err_msg = format!(
             "Failed to get server info from API Server. Status: {}",
             response.status()
-        )));
+        );
+
+        error!("{}", &err_msg);
+
+        return Err(ServerError::Operation(err_msg));
     }
 
     // parse the server information from the response
     let body_bytes = match hyper::body::to_bytes(response.into_body()).await {
         Ok(bytes) => bytes,
         Err(e) => {
-            return Err(ServerError::Operation(format!(
-                "Failed to read the body of the response: {}",
-                e.to_string()
-            )));
+            let err_msg = format!("Failed to read the body of the response: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return Err(ServerError::Operation(err_msg));
         }
     };
     let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
         Ok(json) => json,
         Err(e) => {
-            return Err(ServerError::Operation(format!(
+            let err_msg = format!(
                 "Failed to parse the body of the response: {}",
                 e.to_string()
-            )));
+            );
+
+            error!("{}", &err_msg);
+
+            return Err(ServerError::Operation(err_msg));
         }
     };
-    println!("Server Information: {:?}", &server_info);
+    info!("Server Information: {}", server_info.to_string());
 
     // store the server information
     if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
-        return Err(ServerError::Operation(
-            "Failed to store the server information".to_string(),
-        ));
+        let err_msg = "Failed to store the server information.";
+
+        error!("{}", err_msg);
+
+        return Err(ServerError::Operation(err_msg.to_string()));
     }
 
     Ok(())
