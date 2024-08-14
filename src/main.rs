@@ -272,25 +272,30 @@ async fn handle_request(
             {
                 Ok(req) => req,
                 Err(e) => {
-                    return Ok(error::internal_server_error(format!(
-                        "Failed to create a request: {}",
-                        e.to_string()
-                    )))
+                    let err_msg = format!("Failed to create a request: {}", e.to_string());
+
+                    error!("{}", &err_msg);
+
+                    return Ok(error::internal_server_error(err_msg));
                 }
             };
 
-            println!("tries ({}) to send server info to {}", retry, &url);
+            info!("tries ({}) to send server info to {}", retry, &url);
             // send the request
             response = match client.request(req).await {
                 Ok(resp) => resp,
                 Err(e) => {
                     retry += 1;
                     if retry >= 3 {
-                        return Ok(error::internal_server_error(format!(
+                        let err_msg = format!(
                             "Failed to send server information to {}: {}",
                             &url,
                             e.to_string()
-                        )));
+                        );
+
+                        error!("{}", &err_msg);
+
+                        return Ok(error::internal_server_error(err_msg));
                     }
                     continue;
                 }
@@ -299,13 +304,13 @@ async fn handle_request(
             // check if the request was successful
             match response.status().is_success() {
                 true => {
-                    println!("Server information sent to {} successfully!", &url);
+                    info!("Server information sent to {} successfully!", &url);
                     break;
                 }
                 false => {
                     retry += 1;
                     if retry >= 3 {
-                        println!("Failed to get server information from {}.", &url);
+                        error!("Failed to get server information from {}.", &url);
                         break;
                     }
                 }
