@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+      - release-*
+      - feat-*
+      - ci-*
+      - refactor-*
+      - fix-*
+      - test-*
+    paths:
+      - '.github/workflows/**'
+      - '**/Cargo.toml'
+      - '**/*.rs'
+      - '**/*.sh'
+  pull_request:
+    branches:
+      - dev
+      - main
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/**'
+      - '**/Cargo.toml'
+      - '**/*.rs'
+      - '**/*.sh'
+
+jobs:
+  build-wasm:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-20.04, macos-13, macos-14]
+    steps:
+      - name: Clone project
+        id: checkout
+        uses: actions/checkout@v3
+
+      - name: Install Rust-nightly
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+
+      - name: Install Rust-stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build
+        run: |
+          cargo build --release
