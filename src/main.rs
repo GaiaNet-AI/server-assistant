@@ -190,7 +190,7 @@ async fn handle_request(
     target_url: ServerInfoTargetUrl,
 ) -> Result<Response<Body>, hyper::Error> {
     let path = req.uri().path();
-    let response = if path == "/v1/info" {
+    let response = if path == "/retrieve/info" {
         info!("Server Information Requested");
 
         // retrieve the target URL
