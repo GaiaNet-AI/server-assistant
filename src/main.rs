@@ -7,16 +7,8 @@ use clap::Parser;
 use error::ServerError;
 use health::{check_server_health, is_file};
 use hyper::{
-    // client::HttpConnector,
-    // server,
     service::{make_service_fn, service_fn},
-    Body,
-    Client,
-    Method,
-    Request,
-    Response,
-    Server,
-    Uri,
+    Body, Client, Method, Request, Response, Server, Uri,
 };
 // use notification::periodic_notifications;
 use once_cell::sync::OnceCell;
@@ -37,8 +29,6 @@ pub(crate) type Interval = Arc<RwLock<u64>>;
 const DEFAULT_SERVER_SOCKET_ADDRESS: &str = "0.0.0.0:8080";
 // default socket address of server assistant
 const DEFAULT_ASSISTANT_SOCKET_ADDRESS: &str = "0.0.0.0:3000";
-// Interval for checking server log
-// const INTERVAL: Duration = Duration::from_secs(10);
 
 // server info
 pub(crate) static SERVER_INFO: OnceCell<RwLock<Value>> = OnceCell::new();
@@ -150,9 +140,6 @@ async fn main() -> Result<(), ServerError> {
     // retrieve server information
     retrieve_server_info(Arc::clone(&server_addr)).await?;
 
-    // let subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
-
-    // let subscribers_clone = Arc::clone(&subscribers);
     let server_log_file_clone = Arc::clone(&server_log_file);
     let interval_clone = Arc::clone(&interval);
     tokio::spawn(async move {
@@ -319,7 +306,7 @@ async fn handle_request(
 
         response
     } else if path.starts_with("/v1") {
-        println!("API Path: {}", path);
+        info!("Forward request to the endpoint: {}", path);
 
         forward(req, socket_addr).await
     } else if path == "/health" {
@@ -356,74 +343,12 @@ async fn handle_request(
 
             error::internal_server_error("Server is not healthy")
         }
-    } else if path == "/subscribe" {
-        {
-            // println!("Notification Path: {}", path);
-
-            // let body_bytes = match hyper::body::to_bytes(req.body_mut()).await {
-            //     Ok(bytes) => bytes,
-            //     Err(e) => {
-            //         return Ok(error::internal_server_error(format!(
-            //             "Failed to read the body of the subscribe request: {}",
-            //             e.to_string()
-            //         )))
-            //     }
-            // };
-            // let body_str = match String::from_utf8(body_bytes.to_vec()) {
-            //     Ok(s) => s,
-            //     Err(e) => {
-            //         return Ok(error::internal_server_error(format!(
-            //             "Failed to parse the body of the subscribe request: {}",
-            //             e.to_string()
-            //         )))
-            //     }
-            // };
-            // let url = body_str.trim().to_string();
-
-            // let mut subs = subscribers.write().await;
-            // subs.insert(url.clone());
-            // println!("Subscribed: {}", url);
-
-            // Response::new(Body::from("Subscribed"))
-        }
-
-        unimplemented!("Subscribe endpoint is not implemented")
-    } else if path == "/unsubscribe" {
-        {
-            // println!("Notification Path: {}", path);
-
-            // let body_bytes = match hyper::body::to_bytes(req.body_mut()).await {
-            //     Ok(bytes) => bytes,
-            //     Err(e) => {
-            //         return Ok(error::internal_server_error(format!(
-            //             "Failed to read the body of the unsubscribe request: {}",
-            //             e.to_string()
-            //         )))
-            //     }
-            // };
-            // let body_str = match String::from_utf8(body_bytes.to_vec()) {
-            //     Ok(s) => s,
-            //     Err(e) => {
-            //         return Ok(error::internal_server_error(format!(
-            //             "Failed to parse the body of the unsubscribe request: {}",
-            //             e.to_string()
-            //         )))
-            //     }
-            // };
-            // let url = body_str.trim().to_string();
-
-            // let mut subs = subscribers.write().await;
-            // subs.remove(&url);
-            // println!("Unsubscribed: {}", url);
-
-            // Response::new(Body::from("Unsubscribed"))
-        }
-
-        unimplemented!("Unsubscribe endpoint is not implemented")
     } else {
-        println!("Invalid Path: {}", path);
+        let err_msg = format!("Invalid Path: {}", path);
 
-        error::invalid_endpoint("Invalid endpoint")
+        error!("{}", &err_msg);
+
+        error::invalid_endpoint(err_msg)
     };
 
     Ok(response)
@@ -442,10 +367,14 @@ async fn forward(req: Request<Body>, socket_addr: ServerSocketAddr) -> Response<
     let uri = match Uri::try_from(uri_string) {
         Ok(uri) => uri,
         Err(e) => {
-            return error::internal_server_error(format!("Failed to parse URI: {}", e.to_string()))
+            let err_msg = format!("Failed to parse URI: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return error::internal_server_error(err_msg);
         }
     };
-    println!("Forwarding request to: {}", uri);
+    info!("Forwarding request to: {}", uri);
 
     // decompose original request
     let (parts, body) = req.into_parts();
@@ -459,7 +388,11 @@ async fn forward(req: Request<Body>, socket_addr: ServerSocketAddr) -> Response<
     match client.request(forwarded_req).await {
         Ok(resp) => resp,
         Err(e) => {
-            error::internal_server_error(format!("Failed to forward request. {}", e.to_string()))
+            let err_msg = format!("Failed to forward request: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            error::internal_server_error(err_msg)
         }
     }
 }
