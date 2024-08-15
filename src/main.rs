@@ -15,6 +15,7 @@ use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 // use std::collections::HashSet;
+use hyper_tls::HttpsConnector;
 use log::{error, info};
 use std::{fs::File, io::Write, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
@@ -244,18 +245,24 @@ async fn handle_request(
         let server_info = server_info.read().await;
         info!("Server Information: {:?}", &server_info);
 
+        // create an HTTPS connector
+        let https = HttpsConnector::new();
+
         // send the request
-        let client = Client::new();
+        let client = Client::builder().build::<_, Body>(https);
 
         let mut retry = 0;
         let mut response: Response<Body>;
+        let data = serde_json::to_string(&*server_info).unwrap();
+        info!("body data: {}", &data);
+
         loop {
             // create a new request
             let req = match Request::builder()
-                .method(Method::GET)
+                .method(Method::POST)
                 .uri(url.to_string())
                 .header("Content-Type", "application/json")
-                .body(Body::from(server_info.to_string()))
+                .body(Body::from(data.clone()))
             {
                 Ok(req) => req,
                 Err(e) => {
@@ -273,6 +280,7 @@ async fn handle_request(
                 Ok(resp) => resp,
                 Err(e) => {
                     retry += 1;
+
                     if retry >= 3 {
                         let err_msg = format!(
                             "Failed to send server information to {}: {}",
@@ -283,7 +291,16 @@ async fn handle_request(
                         error!("{}", &err_msg);
 
                         return Ok(error::internal_server_error(err_msg));
+                    } else {
+                        let err_msg = format!(
+                            "Failed to send server information to {}: {}",
+                            &url,
+                            e.to_string()
+                        );
+
+                        error!("{}", &err_msg);
                     }
+
                     continue;
                 }
             };
