@@ -13,31 +13,108 @@ on:
         type: string
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  build:
+    name: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        build: [linux-x86_64, macos-x86_64, macos-arm64]
+        include:
+          - build: linux-x86_64
+            os: ubuntu-22.04
+            rust: nightly
+            target: x86_64-unknown-linux-gnu
+            archive-name: server-assistant-x86_64-unknown-linux-gnu.tar.gz
+          - build: macos-x86_64
+            os: macos-latest
+            rust: nightly
+            target: x86_64-apple-darwin
+            archive-name: server-assistant-x86_64-apple-darwin.tar.gz
+          - build: macos-arm64
+            os: macos-latest
+            rust: nightly
+            target: aarch64-apple-darwin
+            archive-name: server-assistant-aarch64-apple-darwin.tar.gz
+      fail-fast: false
+
     steps:
-      - name: Clone project
+      - name: Checkout repository
         id: checkout
         uses: actions/checkout@v3
 
-      - name: Setup rustup
-        id: rustup
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
         with:
-          target: wasm32-wasip1
+          toolchain: ${{ matrix.rust }}
+          profile: minimal
+          override: true
+          target: ${{ matrix.target }}
 
-      - name: Build
+      - name: Install dependencies
+        if: matrix.build == 'linux-x86_64'
         run: |
-          cargo build --release
-          cp ./target/release/gaias ./gaias
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+          rustup target add ${{ matrix.target }}
 
-      - name: Calculate checksum
-        id: checksum
+      - name: Build binary
+        run: cargo build --verbose --release --target ${{ matrix.target }}
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Strip binary (linux and macos)
+        if: matrix.build == 'linux-x86_64' || matrix.build == 'macos-x86_64' || matrix.build == 'macos-arm64'
         run: |
-          sha256sum gaias > SHA256SUM
+          strip "target/${{ matrix.target }}/release/gaias"
+          ls -al "target/${{ matrix.target }}/release/gaias"
 
-          echo "Debug info(SHA256SUM):"
-          cat SHA256SUM
+      - name: Build archive
+        shell: bash
+        run: |
+          mkdir archive
+          # cp LICENSE README.md archive/
+          cd archive
+          if [ "${{ matrix.build }}" = "windows" ]; then
+            cp "../target/${{ matrix.target }}/release/gaias.exe" ./
+            # 7z a "${{ matrix.archive-name }}" LICENSE README.md gaias.exe
+            7z a "${{ matrix.archive-name }}" gaias.exe
+          fi
+
+          if [ "${{ matrix.build }}" = "linux-x86_64" ]; then
+            cp "../target/${{ matrix.target }}/release/gaias" ./
+            # tar -czf "${{ matrix.archive-name }}" LICENSE README.md gaias
+            sha256sum gaias > SHA256SUM
+            echo "Debug info(SHA256SUM):"
+            cat SHA256SUM
+            tar -czf "${{ matrix.archive-name }}" SHA256SUM gaias
+          fi
+
+          if [ "${{ matrix.build }}" = "macos-x86_64" ] || [ "${{ matrix.build }}" = "macos-arm64" ]; then
+            cp "../target/${{ matrix.target }}/release/gaias" ./
+            # tar -czf "${{ matrix.archive-name }}" LICENSE README.md gaias
+            shasum -a 256 gaias > SHA256SUM
+            echo "Debug info(SHA256SUM):"
+            cat SHA256SUM
+            tar -czf "${{ matrix.archive-name }}" SHA256SUM gaias
+          fi
+          ls -al
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive-name }}
+          path: archive/${{ matrix.archive-name }}
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Display structure of downloaded files
+        run: ls -al
 
       - name: Tag and release names
         id: tag_and_release_names
@@ -55,5 +132,4 @@ jobs:
           draft: true
           prerelease: true
           files: |
-            gaia
-            SHA256SUM
+            *.tar.gz
