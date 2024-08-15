@@ -79,13 +79,11 @@ jobs:
           cd archive
           if [ "${{ matrix.build }}" = "windows" ]; then
             cp "../target/${{ matrix.target }}/release/gaias.exe" ./
-            # 7z a "${{ matrix.archive-name }}" LICENSE README.md gaias.exe
             7z a "${{ matrix.archive-name }}" gaias.exe
           fi
 
           if [ "${{ matrix.build }}" = "linux-x86_64" ]; then
             cp "../target/${{ matrix.target }}/release/gaias" ./
-            # tar -czf "${{ matrix.archive-name }}" LICENSE README.md gaias
             sha256sum gaias > SHA256SUM
             echo "Debug info(SHA256SUM):"
             cat SHA256SUM
@@ -94,7 +92,6 @@ jobs:
 
           if [ "${{ matrix.build }}" = "macos-x86_64" ] || [ "${{ matrix.build }}" = "macos-arm64" ]; then
             cp "../target/${{ matrix.target }}/release/gaias" ./
-            # tar -czf "${{ matrix.archive-name }}" LICENSE README.md gaias
             shasum -a 256 gaias > SHA256SUM
             echo "Debug info(SHA256SUM):"
             cat SHA256SUM
