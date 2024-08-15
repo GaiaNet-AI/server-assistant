@@ -124,7 +124,7 @@ jobs:
 
       - name: Create Release and Upload Release Asset
         if: ${{ github.event.inputs.create_release == 'true' && github.ref == 'refs/heads/main'}}
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: ${{ steps.tag_and_release_names.outputs.release_name }}
           tag_name: ${{ steps.tag_and_release_names.outputs.tag_name }}
@@ -132,4 +132,6 @@ jobs:
           draft: true
           prerelease: true
           files: |
-            *.tar.gz
+            server-assistant-x86_64-unknown-linux-gnu.tar.gz
+            server-assistant-x86_64-apple-darwin.tar.gz
+            server-assistant-aarch64-apple-darwin.tar.gz
