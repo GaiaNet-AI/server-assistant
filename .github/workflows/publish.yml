@@ -25,16 +25,19 @@ jobs:
             rust: nightly
             target: x86_64-unknown-linux-gnu
             archive-name: server-assistant-x86_64-unknown-linux-gnu.tar.gz
+            bin-path: linux-x86_64-binary
           - build: macos-x86_64
             os: macos-latest
             rust: nightly
             target: x86_64-apple-darwin
             archive-name: server-assistant-x86_64-apple-darwin.tar.gz
+            bin-path: macos-x86_64-binary
           - build: macos-arm64
             os: macos-latest
             rust: nightly
             target: aarch64-apple-darwin
             archive-name: server-assistant-aarch64-apple-darwin.tar.gz
+            bin-path: macos-arm64-binary
       fail-fast: false
 
     steps:
@@ -102,7 +105,7 @@ jobs:
       - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive-name }}
+          name: ${{ matrix.bin-path }}
           path: archive/${{ matrix.archive-name }}
 
   release:
@@ -112,9 +115,28 @@ jobs:
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-binary
+          path: linux-x86_64-binary
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-x86_64-binary
+          path: macos-x86_64-binary
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-binary
+          path: macos-arm64-binary
 
       - name: Display structure of downloaded files
-        run: ls -al
+        run: |
+          ls -al
+          ls -al linux-x86_64-binary
+          ls -al macos-x86_64-binary
+          ls -al macos-arm64-binary
 
       - name: Tag and release names
         id: tag_and_release_names
@@ -132,6 +154,6 @@ jobs:
           draft: true
           prerelease: true
           files: |
-            server-assistant-x86_64-unknown-linux-gnu.tar.gz
-            server-assistant-x86_64-apple-darwin.tar.gz
-            server-assistant-aarch64-apple-darwin.tar.gz
+            linux-x86_64-binary/*
+            macos-x86_64-binary/*
+            macos-arm64-binary/*
