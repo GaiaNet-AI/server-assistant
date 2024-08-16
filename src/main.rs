@@ -1,6 +1,5 @@
 mod error;
 mod health;
-// mod notification;
 
 use anyhow::Result;
 use clap::Parser;
@@ -10,17 +9,14 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Client, Method, Request, Response, Server, Uri,
 };
-// use notification::periodic_notifications;
+use hyper_tls::HttpsConnector;
+use log::{error, info};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-// use std::collections::HashSet;
-use hyper_tls::HttpsConnector;
-use log::{error, info};
 use std::{fs::File, io::Write, net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 
-// type Subscribers = Arc<RwLock<HashSet<String>>>;
 type ServerSocketAddr = Arc<RwLock<SocketAddr>>;
 type ServerInfoTargetUrl = Arc<RwLock<String>>;
 pub(crate) type ServerLogFile = Arc<RwLock<String>>;
