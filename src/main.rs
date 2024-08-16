@@ -182,7 +182,6 @@ async fn main() -> Result<(), ServerError> {
 // Handle the incoming request
 async fn handle_request(
     req: Request<Body>,
-    // subscribers: Subscribers,
     socket_addr: ServerSocketAddr,
     target_url: ServerInfoTargetUrl,
 ) -> Result<Response<Body>, hyper::Error> {
@@ -316,6 +315,80 @@ async fn handle_request(
                 }
             }
         }
+
+        response
+    } else if path == "/v1/info" {
+        info!("Request for server information");
+
+        let response = match SERVER_INFO.get() {
+            Some(server_info) => {
+                let server_info = server_info.read().await;
+                let data = serde_json::to_string(&*server_info).unwrap();
+                info!("body data: {}", &data);
+
+                // return response
+                let result = Response::builder()
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "*")
+                    .header("Access-Control-Allow-Headers", "*")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(data));
+                match result {
+                    Ok(response) => response,
+                    Err(e) => {
+                        let err_msg = e.to_string();
+
+                        // log
+                        error!(target: "stdout", "{}", &err_msg);
+
+                        error::internal_server_error(err_msg)
+                    }
+                }
+            }
+            None => {
+                let mut response = forward(req, socket_addr).await;
+
+                // parse the server information from the response
+                let body_bytes = match hyper::body::to_bytes(response.body_mut()).await {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let err_msg =
+                            format!("Failed to read the body of the response: {}", e.to_string());
+
+                        error!("{}", &err_msg);
+
+                        return Ok(error::internal_server_error(err_msg));
+                    }
+                };
+                let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        let err_msg = format!(
+                            "Failed to parse the body of the response: {}",
+                            e.to_string()
+                        );
+
+                        error!("{}", &err_msg);
+
+                        return Ok(error::internal_server_error(err_msg));
+                    }
+                };
+                info!("Server Information: {}", server_info.to_string());
+
+                // store the server information
+                if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
+                    let err_msg = "Failed to store the server information.";
+
+                    error!("{}", err_msg);
+
+                    return Ok(error::internal_server_error(err_msg));
+                }
+
+                response
+            }
+        };
+
+        info!(target: "stdout", "Send the server info response.");
 
         response
     } else if path.starts_with("/v1") {
