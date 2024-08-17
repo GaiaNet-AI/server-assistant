@@ -1,4 +1,4 @@
-use crate::{error::ServerError, Interval, ServerLogFile, SERVER_HEALTH};
+use crate::{error::AssistantError, Interval, ServerLogFile, SERVER_HEALTH};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use core::panic;
 use log::{error, info};
@@ -67,7 +67,7 @@ pub(crate) async fn is_file<P: AsRef<Path>>(path: P) -> bool {
 pub(crate) async fn check_server_health(
     log_file: ServerLogFile,
     interval: Interval,
-) -> Result<(), ServerError> {
+) -> Result<(), AssistantError> {
     let log_file_path = log_file.read().await;
 
     let mut file = File::open(&*log_file_path).expect("Unable to open log file");
@@ -78,7 +78,7 @@ pub(crate) async fn check_server_health(
 
             error!("{}", err_msg);
 
-            return Err(ServerError::Operation(err_msg.to_string()));
+            return Err(AssistantError::Operation(err_msg.to_string()));
         }
     };
     let mut reader = BufReader::new(file_clone);
@@ -89,7 +89,7 @@ pub(crate) async fn check_server_health(
 
         error!("{}", &err_msg);
 
-        return Err(ServerError::Operation(err_msg));
+        return Err(AssistantError::Operation(err_msg));
     }
 
     // Initialize a VecDeque with a capacity of 1
@@ -102,7 +102,7 @@ pub(crate) async fn check_server_health(
 
             error!("{}", &err_msg);
 
-            return Err(ServerError::Operation(err_msg));
+            return Err(AssistantError::Operation(err_msg));
         };
 
         if !new_lines.is_empty() {
@@ -169,7 +169,7 @@ pub(crate) async fn check_server_health(
 
                 error!("{}", &err_msg);
 
-                return Err(ServerError::Operation(err_msg));
+                return Err(AssistantError::Operation(err_msg));
             }
         };
         info!("current position: {}", current_position);
@@ -190,7 +190,7 @@ pub(crate) async fn check_server_health(
 
             error!("{}", &err_msg);
 
-            return Err(ServerError::Operation(err_msg));
+            return Err(AssistantError::Operation(err_msg));
         }
         let end_position = match file.seek(SeekFrom::Current(0)) {
             Ok(position) => position,
@@ -199,7 +199,7 @@ pub(crate) async fn check_server_health(
 
                 error!("{}", &err_msg);
 
-                return Err(ServerError::Operation(err_msg));
+                return Err(AssistantError::Operation(err_msg));
             }
         };
         info!("End position: {}", end_position);
@@ -211,7 +211,7 @@ pub(crate) async fn check_server_health(
 
                 error!("{}", &err_msg);
 
-                return Err(ServerError::Operation(err_msg));
+                return Err(AssistantError::Operation(err_msg));
             }
         } else {
             // No new log entries, seek back to the last position
@@ -220,7 +220,7 @@ pub(crate) async fn check_server_health(
 
                 error!("{}", &err_msg);
 
-                return Err(ServerError::Operation(err_msg));
+                return Err(AssistantError::Operation(err_msg));
             }
         }
     }

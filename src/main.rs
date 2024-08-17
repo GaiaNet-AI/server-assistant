@@ -3,22 +3,22 @@ mod health;
 
 use anyhow::Result;
 use clap::Parser;
-use error::ServerError;
+use error::AssistantError;
 use health::{check_server_health, is_file};
-use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Client, Method, Request, Response, Server, Uri,
-};
+use hyper::{client::HttpConnector, Body, Client, Method, Request, Response};
 use hyper_tls::HttpsConnector;
 use log::{error, info};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fs::File, io::Write, net::SocketAddr, sync::Arc};
-use tokio::sync::RwLock;
+use std::{collections::HashSet, fs::File, io::Write, net::SocketAddr, sync::Arc};
+use tokio::{
+    sync::RwLock,
+    time::{interval, Duration},
+};
 
+type Subscribers = Arc<RwLock<HashSet<String>>>;
 type ServerSocketAddr = Arc<RwLock<SocketAddr>>;
-type ServerInfoTargetUrl = Arc<RwLock<String>>;
 pub(crate) type ServerLogFile = Arc<RwLock<String>>;
 pub(crate) type Interval = Arc<RwLock<u64>>;
 
@@ -61,7 +61,7 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), ServerError> {
+async fn main() -> Result<(), AssistantError> {
     // parse the command line arguments
     let cli = Cli::parse();
 
@@ -71,7 +71,7 @@ async fn main() -> Result<(), ServerError> {
         Err(e) => {
             error!("Failed to create log file: {}", e);
 
-            return Err(ServerError::Operation(format!(
+            return Err(AssistantError::Operation(format!(
                 "Failed to create log file: {}",
                 e
             )));
@@ -101,14 +101,14 @@ async fn main() -> Result<(), ServerError> {
     let assistant_addr = cli
         .socket_addr
         .parse::<SocketAddr>()
-        .map_err(|e| ServerError::SocketAddr(e.to_string()))?;
+        .map_err(|e| AssistantError::SocketAddr(e.to_string()))?;
     info!("Socket address of server assistant: {}", &assistant_addr);
 
     // parse socket address of LlamaEdge API Server instance
     let server_addr = cli
         .server_socket_addr
         .parse::<SocketAddr>()
-        .map_err(|e| ServerError::SocketAddr(e.to_string()))?;
+        .map_err(|e| AssistantError::SocketAddr(e.to_string()))?;
     info!("Socket address of API server: {}", &server_addr);
     let server_addr = Arc::new(RwLock::new(server_addr));
 
@@ -116,7 +116,7 @@ async fn main() -> Result<(), ServerError> {
     let server_log_file = cli.server_log_file;
     if !is_file(&server_log_file).await {
         error!("Invalid log file path: {}", &server_log_file);
-        return Err(ServerError::ArgumentError(format!(
+        return Err(AssistantError::ArgumentError(format!(
             "Invalid log file path: {}",
             &server_log_file
         )));
@@ -124,19 +124,35 @@ async fn main() -> Result<(), ServerError> {
     info!("Log file of API server: {}", &server_log_file);
     let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
 
-    // parse the target URL for sending server information
-    let target_url = cli.target_url;
-    info!("Target URL for sending server info: {}", &target_url);
-    let target_url: ServerInfoTargetUrl = Arc::new(RwLock::new(target_url));
-
     // parse the interval of checking server health
     let interval = cli.interval;
     info!("Interval of checking server health: {}", &interval);
     let interval: Interval = Arc::new(RwLock::new(interval));
 
-    // retrieve server information
-    retrieve_server_info(Arc::clone(&server_addr)).await?;
+    // todo: set subscribers for server info
+    let server_info_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
 
+    // todo: set subscribers for server health
+    let server_health_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
+
+    // push server info
+    {
+        // retrieve server information
+        retrieve_server_info(Arc::clone(&server_addr)).await?;
+
+        match push_server_info(server_info_subscribers.clone()).await {
+            Ok(_) => info!("Server information sent to subscribers successfully!"),
+            Err(e) => {
+                let err_msg = format!("Failed to send server information to subscribers: {}", e);
+
+                error!("{}", &err_msg);
+
+                return Err(AssistantError::Operation(err_msg));
+            }
+        }
+    }
+
+    // check server health periodically
     let server_log_file_clone = Arc::clone(&server_log_file);
     let interval_clone = Arc::clone(&interval);
     tokio::spawn(async move {
@@ -145,111 +161,132 @@ async fn main() -> Result<(), ServerError> {
 
             error!("{}", &err_msg);
 
-            return Err(ServerError::Operation(err_msg));
+            return Err(AssistantError::Operation(err_msg));
         }
 
         Ok(())
     });
 
-    let make_svc = make_service_fn(move |_| {
-        // let subscribers = Arc::clone(&subscribers);
-        let server_addr = Arc::clone(&server_addr);
-        let target_url = Arc::clone(&target_url);
-        // let server_addr = Arc::clone(&server_addr);
-        async {
-            Ok::<_, hyper::Error>(service_fn(move |req| {
-                handle_request(
-                    req,
-                    // Arc::clone(&subscribers),
-                    Arc::clone(&server_addr),
-                    Arc::clone(&target_url),
-                )
-            }))
-        }
+    // push server health periodically
+    let server_health_subscribers_clone = Arc::clone(&server_health_subscribers);
+    tokio::spawn(async move {
+        periodic_notifications(server_health_subscribers_clone).await;
     });
 
-    // Run it with hyper on localhost:3000
-    info!("Listening on http://{}", &assistant_addr);
-
-    let server = Server::bind(&assistant_addr).serve(make_svc);
-
-    match server.await {
-        Ok(_) => Ok(()),
-        Err(e) => Err(ServerError::Operation(e.to_string())),
-    }
+    Ok(())
 }
 
-// Handle the incoming request
-async fn handle_request(
-    req: Request<Body>,
-    socket_addr: ServerSocketAddr,
-    target_url: ServerInfoTargetUrl,
-) -> Result<Response<Body>, hyper::Error> {
-    let path = req.uri().path();
-    let response = if path == "/retrieve/info" {
-        info!("Server Information Requested");
+// Retrieve server information from the LlamaEdge API Server
+async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), AssistantError> {
+    // send a request to the LlamaEdge API Server to get the server information
+    let addr = socket_addr.read().await;
+    let addr = (*addr).to_string();
+    let url = format!("http://{}{}", addr, "/v1/info");
 
-        // retrieve the target URL
-        let url = target_url.read().await;
-        info!("target URL: {}", &url);
+    // create a new request
+    let req = match Request::builder()
+        .method(Method::GET)
+        .uri(&url)
+        .header("Content-Type", "application/json")
+        .body(Body::empty())
+    {
+        Ok(req) => req,
+        Err(e) => {
+            let err_msg = format!("Failed to create a request: {}", e.to_string());
 
-        let server_info = match SERVER_INFO.get() {
-            Some(info) => info,
-            None => {
-                let response = forward(req, socket_addr).await;
+            error!("{}", &err_msg);
 
-                // parse the server information from the response
-                let body_bytes = match hyper::body::to_bytes(response.into_body()).await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let err_msg =
-                            format!("Failed to read the body of the response: {}", e.to_string());
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
 
-                        error!("{}", &err_msg);
+    // send the request
+    let client = Client::new();
+    let response = match client.request(req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            let err_msg = format!("Failed to send a request: {}", e.to_string());
 
-                        return Ok(error::internal_server_error(err_msg));
-                    }
-                };
-                let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        let err_msg = format!(
-                            "Failed to parse the body of the response: {}",
-                            e.to_string()
-                        );
+            error!("{}", &err_msg);
 
-                        error!("{}", &err_msg);
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
+    if !response.status().is_success() {
+        let err_msg = format!(
+            "Failed to get server info from API Server. Status: {}",
+            response.status()
+        );
 
-                        return Ok(error::internal_server_error(err_msg));
-                    }
-                };
-                info!("Server Information: {}", server_info.to_string());
+        error!("{}", &err_msg);
 
-                // store the server information
-                if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
-                    let err_msg = "Failed to store the server information.";
+        return Err(AssistantError::Operation(err_msg));
+    }
 
-                    error!("{}", err_msg);
+    // parse the server information from the response
+    let body_bytes = match hyper::body::to_bytes(response.into_body()).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let err_msg = format!("Failed to read the body of the response: {}", e.to_string());
 
-                    return Ok(error::internal_server_error(err_msg));
-                }
+            error!("{}", &err_msg);
 
-                SERVER_INFO.get().unwrap()
-            }
-        };
-        let server_info = server_info.read().await;
-        info!("Server Information: {:?}", &server_info);
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
+    let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+        Ok(json) => json,
+        Err(e) => {
+            let err_msg = format!(
+                "Failed to parse the body of the response: {}",
+                e.to_string()
+            );
 
-        // create an HTTPS connector
-        let https = HttpsConnector::new();
+            error!("{}", &err_msg);
 
-        // send the request
-        let client = Client::builder().build::<_, Body>(https);
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
+    info!("Server Information: {}", server_info.to_string());
 
+    // store the server information
+    if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
+        let err_msg = "Failed to store the server information.";
+
+        error!("{}", err_msg);
+
+        return Err(AssistantError::Operation(err_msg.to_string()));
+    }
+
+    Ok(())
+}
+
+// Push server information to all subscribers
+async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError> {
+    let server_info = match SERVER_INFO.get() {
+        Some(info) => info,
+        None => {
+            return Err(AssistantError::Operation(
+                "Server information not found.".to_string(),
+            ))
+        }
+    };
+    let server_info = server_info.read().await;
+    info!("Server Information: {:?}", &server_info);
+
+    // create an HTTPS connector
+    let https = HttpsConnector::new();
+
+    // send the request
+    let client = Client::builder().build::<_, Body>(https);
+
+    let server_info_str = serde_json::to_string(&*server_info).unwrap();
+    info!("body data: {}", &server_info_str);
+
+    let subs = subscribers.read().await;
+    for url in subs.iter() {
         let mut retry = 0;
         let mut response: Response<Body>;
-        let data = serde_json::to_string(&*server_info).unwrap();
-        info!("body data: {}", &data);
 
         loop {
             // create a new request
@@ -257,7 +294,7 @@ async fn handle_request(
                 .method(Method::POST)
                 .uri(url.to_string())
                 .header("Content-Type", "application/json")
-                .body(Body::from(data.clone()))
+                .body(Body::from(server_info_str.clone()))
             {
                 Ok(req) => req,
                 Err(e) => {
@@ -265,7 +302,7 @@ async fn handle_request(
 
                     error!("{}", &err_msg);
 
-                    return Ok(error::internal_server_error(err_msg));
+                    return Err(AssistantError::Operation(err_msg));
                 }
             };
 
@@ -285,7 +322,7 @@ async fn handle_request(
 
                         error!("{}", &err_msg);
 
-                        return Ok(error::internal_server_error(err_msg));
+                        return Err(AssistantError::Operation(err_msg));
                     } else {
                         let err_msg = format!(
                             "Failed to send server information to {}: {}",
@@ -315,186 +352,41 @@ async fn handle_request(
                 }
             }
         }
-
-        response
-    } else if path == "/v1/info" {
-        info!("Request for server information");
-
-        let response = match SERVER_INFO.get() {
-            Some(server_info) => {
-                let server_info = server_info.read().await;
-                let data = serde_json::to_string(&*server_info).unwrap();
-                info!("body data: {}", &data);
-
-                // return response
-                let result = Response::builder()
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "*")
-                    .header("Access-Control-Allow-Headers", "*")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(data));
-                match result {
-                    Ok(response) => response,
-                    Err(e) => {
-                        let err_msg = e.to_string();
-
-                        // log
-                        error!(target: "stdout", "{}", &err_msg);
-
-                        error::internal_server_error(err_msg)
-                    }
-                }
-            }
-            None => {
-                let mut response = forward(req, socket_addr).await;
-
-                // parse the server information from the response
-                let body_bytes = match hyper::body::to_bytes(response.body_mut()).await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let err_msg =
-                            format!("Failed to read the body of the response: {}", e.to_string());
-
-                        error!("{}", &err_msg);
-
-                        return Ok(error::internal_server_error(err_msg));
-                    }
-                };
-                let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                    Ok(json) => json,
-                    Err(e) => {
-                        let err_msg = format!(
-                            "Failed to parse the body of the response: {}",
-                            e.to_string()
-                        );
-
-                        error!("{}", &err_msg);
-
-                        return Ok(error::internal_server_error(err_msg));
-                    }
-                };
-                info!("Server Information: {}", server_info.to_string());
-
-                // store the server information
-                if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
-                    let err_msg = "Failed to store the server information.";
-
-                    error!("{}", err_msg);
-
-                    return Ok(error::internal_server_error(err_msg));
-                }
-
-                response
-            }
-        };
-
-        info!(target: "stdout", "Send the server info response.");
-
-        response
-    } else if path.starts_with("/v1") {
-        info!("Forward request to the endpoint: {}", path);
-
-        forward(req, socket_addr).await
-    } else if path == "/health" {
-        info!("Receive a request in health endpoint");
-
-        // check if the server is healthy
-        if let Some(health) = SERVER_HEALTH.get() {
-            let health = health.read().await;
-            if !*health {
-                error!("Server is not healthy");
-
-                error::internal_server_error("Server is not healthy")
-            } else {
-                // return response
-                let result = Response::builder()
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "*")
-                    .header("Access-Control-Allow-Headers", "*")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from("OK"));
-                match result {
-                    Ok(response) => response,
-                    Err(e) => {
-                        let err_msg = e.to_string();
-
-                        error!(target: "stdout", "{}", &err_msg);
-
-                        error::internal_server_error(err_msg)
-                    }
-                }
-            }
-        } else {
-            error!("Server is not healthy");
-
-            error::internal_server_error("Server is not healthy")
-        }
-    } else {
-        let err_msg = format!("Invalid Path: {}", path);
-
-        error!("{}", &err_msg);
-
-        error::invalid_endpoint(err_msg)
-    };
-
-    Ok(response)
-}
-
-// Forward API requests to the LlamaEdge API Server
-async fn forward(req: Request<Body>, socket_addr: ServerSocketAddr) -> Response<Body> {
-    let client = Client::new();
-
-    // retrieve the path and query from the original request
-    let path_and_query = req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("");
-    // construct forwarding uri
-    let addr = socket_addr.read().await;
-    let addr = (*addr).to_string();
-    let uri_string = format!("http://{}{}", addr, path_and_query);
-    let uri = match Uri::try_from(uri_string) {
-        Ok(uri) => uri,
-        Err(e) => {
-            let err_msg = format!("Failed to parse URI: {}", e.to_string());
-
-            error!("{}", &err_msg);
-
-            return error::internal_server_error(err_msg);
-        }
-    };
-    info!("Forwarding request to: {}", uri);
-
-    // decompose original request
-    let (parts, body) = req.into_parts();
-    // construct forwarded request
-    let mut forwarded_req = Request::from_parts(parts, body);
-    // update the uri of the forwarded request
-    let forwarded_req_uri = forwarded_req.uri_mut();
-    *forwarded_req_uri = uri;
-
-    // send forwarded request
-    match client.request(forwarded_req).await {
-        Ok(resp) => resp,
-        Err(e) => {
-            let err_msg = format!("Failed to forward request: {}", e.to_string());
-
-            error!("{}", &err_msg);
-
-            error::internal_server_error(err_msg)
-        }
     }
+
+    Ok(())
 }
 
-async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), ServerError> {
-    // send a request to the LlamaEdge API Server to get the server information
-    let addr = socket_addr.read().await;
-    let addr = (*addr).to_string();
-    let url = format!("http://{}{}", addr, "/v1/info");
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Notification {
+    health: bool,
+}
+unsafe impl Send for Notification {}
+unsafe impl Sync for Notification {}
+
+// Send a notification to a subscriber
+async fn send_notification(
+    client: &Client<HttpConnector>,
+    url: &str,
+    message: Notification,
+) -> Result<(), AssistantError> {
+    let payload = match serde_json::to_string(&message) {
+        Ok(payload) => payload,
+        Err(e) => {
+            let err_msg = format!("Failed to serialize the message: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
 
     // create a new request
     let req = match Request::builder()
-        .method(Method::GET)
-        .uri(&url)
+        .method(Method::POST)
+        .uri(url)
         .header("Content-Type", "application/json")
-        .body(Body::empty())
+        .body(Body::from(payload.to_string()))
     {
         Ok(req) => req,
         Err(e) => {
@@ -502,67 +394,52 @@ async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), Serve
 
             error!("{}", &err_msg);
 
-            return Err(ServerError::Operation(err_msg));
+            return Err(AssistantError::Operation(err_msg));
         }
     };
 
-    // send the request
-    let client = Client::new();
-    let response = match client.request(req).await {
-        Ok(resp) => resp,
+    match client.request(req).await {
+        Ok(resp) => match resp.status().is_success() {
+            true => {
+                info!("Notification sent to {} successfully!", url)
+            }
+            false => error!(
+                "Failed to send notification to {}. Status: {}",
+                url,
+                resp.status()
+            ),
+        },
         Err(e) => {
             let err_msg = format!("Failed to send a request: {}", e.to_string());
 
             error!("{}", &err_msg);
 
-            return Err(ServerError::Operation(err_msg));
+            return Err(AssistantError::Operation(err_msg));
         }
-    };
-    if !response.status().is_success() {
-        let err_msg = format!(
-            "Failed to get server info from API Server. Status: {}",
-            response.status()
-        );
-
-        error!("{}", &err_msg);
-
-        return Err(ServerError::Operation(err_msg));
-    }
-
-    // parse the server information from the response
-    let body_bytes = match hyper::body::to_bytes(response.into_body()).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let err_msg = format!("Failed to read the body of the response: {}", e.to_string());
-
-            error!("{}", &err_msg);
-
-            return Err(ServerError::Operation(err_msg));
-        }
-    };
-    let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-        Ok(json) => json,
-        Err(e) => {
-            let err_msg = format!(
-                "Failed to parse the body of the response: {}",
-                e.to_string()
-            );
-
-            error!("{}", &err_msg);
-
-            return Err(ServerError::Operation(err_msg));
-        }
-    };
-    info!("Server Information: {}", server_info.to_string());
-
-    // store the server information
-    if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
-        let err_msg = "Failed to store the server information.";
-
-        error!("{}", err_msg);
-
-        return Err(ServerError::Operation(err_msg.to_string()));
     }
 
     Ok(())
+}
+
+// Periodically send notifications to all subscribers
+async fn periodic_notifications(subscribers: Subscribers) {
+    let client = Client::new();
+    let mut interval = interval(Duration::from_secs(10));
+    loop {
+        interval.tick().await;
+        let health = match SERVER_HEALTH.get() {
+            Some(health) => {
+                let health = health.read().await;
+                *health
+            }
+            None => continue,
+        };
+        let message = Notification { health };
+        let subs = subscribers.read().await;
+        for url in subs.iter() {
+            if let Err(e) = send_notification(&client, url, message.clone()).await {
+                error!("Error sending notification to {}: {}", url, e);
+            }
+        }
+    }
 }
