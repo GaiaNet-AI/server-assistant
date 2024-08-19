@@ -12,10 +12,7 @@ use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashSet, fs::File, io::Write, net::SocketAddr, sync::Arc};
-use tokio::{
-    sync::RwLock,
-    time::{interval, Duration},
-};
+use tokio::{sync::RwLock, time::Duration};
 
 type Subscribers = Arc<RwLock<HashSet<String>>>;
 type ServerSocketAddr = Arc<RwLock<SocketAddr>>;
@@ -46,7 +43,10 @@ struct Cli {
     server_log_file: String,
     /// Target URL for sending server information
     #[arg(long)]
-    target_url: String,
+    server_info_url: String,
+    /// Target URL for sending server health
+    #[arg(long)]
+    server_health_url: String,
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
@@ -112,21 +112,69 @@ async fn main() -> Result<(), AssistantError> {
     info!("Log file of API server: {}", &server_log_file);
     let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
 
+    // parse the target URL for sending server information
+    info!(
+        "Target URL for sending server info: {}",
+        &cli.server_info_url
+    );
+
+    // parse the target URL for sending server health
+    info!(
+        "Target URL for sending server health: {}",
+        &cli.server_health_url
+    );
+
     // parse the interval of checking server health
     let interval = cli.interval;
     info!("Interval of checking server health: {}", &interval);
     let interval: Interval = Arc::new(RwLock::new(interval));
 
-    // todo: set subscribers for server info
+    // add subscribers for server info
     let server_info_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
+    info!("Add subscriber for server info: {}", &cli.server_info_url);
+    server_info_subscribers
+        .write()
+        .await
+        .insert(cli.server_info_url);
 
-    // todo: set subscribers for server health
+    let push_info_handle = tokio::spawn(async move {
+        // retrieve server information
+        retrieve_server_info(Arc::clone(&server_addr)).await?;
+
+        // push server information to all subscribers
+        match push_server_info(server_info_subscribers.clone()).await {
+            Ok(_) => {
+                info!("Server information sent to subscribers successfully!");
+                Ok(())
+            }
+            Err(e) => {
+                let err_msg = format!(
+                    "Failed to push server info to subscribers. {}",
+                    e.to_string()
+                );
+
+                error!("{}", &err_msg);
+
+                return Err(AssistantError::Operation(err_msg));
+            }
+        }
+    });
+
+    // add subscribers for server health
     let server_health_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
+    info!(
+        "Add subscriber for server health: {}",
+        &cli.server_health_url
+    );
+    server_health_subscribers
+        .write()
+        .await
+        .insert(cli.server_health_url);
 
     // check server health periodically
     let server_log_file_clone = Arc::clone(&server_log_file);
     let interval_clone = Arc::clone(&interval);
-    tokio::spawn(async move {
+    let health_check_handle = tokio::spawn(async move {
         if let Err(e) = check_server_health(server_log_file_clone, interval_clone).await {
             let err_msg = format!("Failed to check server health: {}", e);
 
@@ -140,26 +188,17 @@ async fn main() -> Result<(), AssistantError> {
 
     // push server health periodically
     let server_health_subscribers_clone = Arc::clone(&server_health_subscribers);
-    tokio::spawn(async move {
-        periodic_notifications(server_health_subscribers_clone).await;
+    let interval_clone = Arc::clone(&interval);
+    let health_notify_handle = tokio::spawn(async move {
+        periodic_notifications(server_health_subscribers_clone, interval_clone).await;
     });
 
-    // retrieve server information
-    retrieve_server_info(Arc::clone(&server_addr)).await?;
+    if let Err(e) = tokio::try_join!(push_info_handle, health_check_handle, health_notify_handle) {
+        let err_msg = format!("Failed to check server health: {}", e);
 
-    // push server information to all subscribers
-    match push_server_info(server_info_subscribers.clone()).await {
-        Ok(_) => info!("Server information sent to subscribers successfully!"),
-        Err(e) => {
-            let err_msg = format!(
-                "Failed to push server info to subscribers. {}",
-                e.to_string()
-            );
+        error!("{}", &err_msg);
 
-            error!("{}", &err_msg);
-
-            return Err(AssistantError::Operation(err_msg));
-        }
+        return Err(AssistantError::Operation(err_msg));
     }
 
     Ok(())
@@ -350,7 +389,7 @@ async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError
                     // check if the request was successful
                     match response.status().is_success() {
                         true => {
-                            info!("Server information sent to {} successfully!", &url);
+                            info!("Server info sent to {} successfully!", &url);
                             break;
                         }
                         false => {
@@ -377,8 +416,8 @@ unsafe impl Send for Notification {}
 unsafe impl Sync for Notification {}
 
 // Send a notification to a subscriber
-async fn send_health_status(
-    client: &Client<HttpConnector>,
+async fn push_server_health(
+    client: &Client<HttpsConnector<HttpConnector>>,
     url: &str,
     message: Notification,
 ) -> Result<(), AssistantError> {
@@ -392,6 +431,7 @@ async fn send_health_status(
             return Err(AssistantError::Operation(err_msg));
         }
     };
+    info!("health status: {}", payload);
 
     // create a new request
     let req = match Request::builder()
@@ -413,10 +453,10 @@ async fn send_health_status(
     match client.request(req).await {
         Ok(resp) => match resp.status().is_success() {
             true => {
-                info!("Notification sent to {} successfully!", url)
+                info!("Server health sent to {} successfully!", url)
             }
             false => error!(
-                "Failed to send notification to {}. Status: {}",
+                "Failed to send server health to {}. Status: {}",
                 url,
                 resp.status()
             ),
@@ -434,9 +474,17 @@ async fn send_health_status(
 }
 
 // Periodically send notifications to all subscribers
-async fn periodic_notifications(subscribers: Subscribers) {
-    let client = Client::new();
-    let mut interval = interval(Duration::from_secs(10));
+async fn periodic_notifications(subscribers: Subscribers, interval: Interval) {
+    // let client = Client::new();
+
+    // create an HTTPS connector
+    let https = HttpsConnector::new();
+
+    // send the request
+    let client = Client::builder().build::<_, Body>(https);
+
+    let interval = interval.read().await;
+    let mut interval = tokio::time::interval(Duration::from_secs(*interval));
     loop {
         interval.tick().await;
         let health = match SERVER_HEALTH.get() {
@@ -456,7 +504,7 @@ async fn periodic_notifications(subscribers: Subscribers) {
                 info!("Sending notifications to all subscribers...");
 
                 for url in subs.iter() {
-                    if let Err(e) = send_health_status(&client, url, message.clone()).await {
+                    if let Err(e) = push_server_health(&client, url, message.clone()).await {
                         error!("Error sending notification to {}: {}", url, e);
                     }
                 }
