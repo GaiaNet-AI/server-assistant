@@ -68,6 +68,8 @@ pub(crate) async fn check_server_health(
     log_file: ServerLogFile,
     interval: Interval,
 ) -> Result<(), AssistantError> {
+    info!("Checking server health");
+
     let log_file_path = log_file.read().await;
 
     let mut file = File::open(&*log_file_path).expect("Unable to open log file");

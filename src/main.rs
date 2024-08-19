@@ -7,7 +7,7 @@ use error::AssistantError;
 use health::{check_server_health, is_file};
 use hyper::{client::HttpConnector, Body, Client, Method, Request, Response};
 use hyper_tls::HttpsConnector;
-use log::{error, info};
+use log::{error, info, warn};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,8 +24,6 @@ pub(crate) type Interval = Arc<RwLock<u64>>;
 
 // default socket address of LlamaEdge API Server instance
 const DEFAULT_SERVER_SOCKET_ADDRESS: &str = "0.0.0.0:8080";
-// default socket address of server assistant
-const DEFAULT_ASSISTANT_SOCKET_ADDRESS: &str = "0.0.0.0:3000";
 
 // server info
 pub(crate) static SERVER_INFO: OnceCell<RwLock<Value>> = OnceCell::new();
@@ -40,9 +38,6 @@ struct Payload {
 #[derive(Debug, Parser)]
 #[command(name = "Server Assistant", version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = "An assistant for LlamaEdge API Server")]
 struct Cli {
-    /// Socket address of server assistant
-    #[arg(long, default_value = DEFAULT_ASSISTANT_SOCKET_ADDRESS)]
-    socket_addr: String,
     /// Socket address of LlamaEdge API Server instance
     #[arg(long, default_value = DEFAULT_SERVER_SOCKET_ADDRESS)]
     server_socket_addr: String,
@@ -97,13 +92,6 @@ async fn main() -> Result<(), AssistantError> {
         .init();
     info!("log file of server assistant: {}", &cli.log);
 
-    // parse socket address of server assistant
-    let assistant_addr = cli
-        .socket_addr
-        .parse::<SocketAddr>()
-        .map_err(|e| AssistantError::SocketAddr(e.to_string()))?;
-    info!("Socket address of server assistant: {}", &assistant_addr);
-
     // parse socket address of LlamaEdge API Server instance
     let server_addr = cli
         .server_socket_addr
@@ -135,23 +123,6 @@ async fn main() -> Result<(), AssistantError> {
     // todo: set subscribers for server health
     let server_health_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
 
-    // push server info
-    {
-        // retrieve server information
-        retrieve_server_info(Arc::clone(&server_addr)).await?;
-
-        match push_server_info(server_info_subscribers.clone()).await {
-            Ok(_) => info!("Server information sent to subscribers successfully!"),
-            Err(e) => {
-                let err_msg = format!("Failed to send server information to subscribers: {}", e);
-
-                error!("{}", &err_msg);
-
-                return Err(AssistantError::Operation(err_msg));
-            }
-        }
-    }
-
     // check server health periodically
     let server_log_file_clone = Arc::clone(&server_log_file);
     let interval_clone = Arc::clone(&interval);
@@ -172,6 +143,24 @@ async fn main() -> Result<(), AssistantError> {
     tokio::spawn(async move {
         periodic_notifications(server_health_subscribers_clone).await;
     });
+
+    // retrieve server information
+    retrieve_server_info(Arc::clone(&server_addr)).await?;
+
+    // push server information to all subscribers
+    match push_server_info(server_info_subscribers.clone()).await {
+        Ok(_) => info!("Server information sent to subscribers successfully!"),
+        Err(e) => {
+            let err_msg = format!(
+                "Failed to push server info to subscribers. {}",
+                e.to_string()
+            );
+
+            error!("{}", &err_msg);
+
+            return Err(AssistantError::Operation(err_msg));
+        }
+    }
 
     Ok(())
 }
@@ -263,42 +252,39 @@ async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), Assis
 
 // Push server information to all subscribers
 async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError> {
-    let server_info = match SERVER_INFO.get() {
-        Some(info) => info,
-        None => {
-            return Err(AssistantError::Operation(
-                "Server information not found.".to_string(),
-            ))
-        }
-    };
-    let server_info = server_info.read().await;
-    info!("Server Information: {:?}", &server_info);
-
-    // create an HTTPS connector
-    let https = HttpsConnector::new();
-
-    // send the request
-    let client = Client::builder().build::<_, Body>(https);
-
-    let server_info_str = serde_json::to_string(&*server_info).unwrap();
-    info!("body data: {}", &server_info_str);
-
     let subs = subscribers.read().await;
-    for url in subs.iter() {
-        let mut retry = 0;
-        let mut response: Response<Body>;
+    match subs.is_empty() {
+        true => {
+            let err_msg = "No subscribers found.".to_string();
 
-        loop {
-            // create a new request
-            let req = match Request::builder()
-                .method(Method::POST)
-                .uri(url.to_string())
-                .header("Content-Type", "application/json")
-                .body(Body::from(server_info_str.clone()))
-            {
-                Ok(req) => req,
+            error!("{}", &err_msg);
+
+            Err(AssistantError::Operation(err_msg))
+        }
+        false => {
+            let server_info = match SERVER_INFO.get() {
+                Some(info) => info,
+                None => {
+                    return Err(AssistantError::Operation(
+                        "No server info available.".to_string(),
+                    ))
+                }
+            };
+            let server_info = server_info.read().await;
+
+            // create an HTTPS connector
+            let https = HttpsConnector::new();
+
+            // send the request
+            let client = Client::builder().build::<_, Body>(https);
+
+            let server_info_str = match serde_json::to_string(&*server_info) {
+                Ok(info) => info,
                 Err(e) => {
-                    let err_msg = format!("Failed to create a request: {}", e.to_string());
+                    let err_msg = format!(
+                        "Failed to serialize the server information. {}",
+                        e.to_string()
+                    );
 
                     error!("{}", &err_msg);
 
@@ -306,55 +292,81 @@ async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError
                 }
             };
 
-            info!("tries ({}) to send server info to {}", retry, &url);
-            // send the request
-            response = match client.request(req).await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    retry += 1;
+            for url in subs.iter() {
+                let mut retry = 0;
+                let mut response: Response<Body>;
 
-                    if retry >= 3 {
-                        let err_msg = format!(
-                            "Failed to send server information to {}: {}",
-                            &url,
-                            e.to_string()
-                        );
+                // retry 3 times if the request fails to send
+                loop {
+                    // create a new request
+                    let req = match Request::builder()
+                        .method(Method::POST)
+                        .uri(url.to_string())
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(server_info_str.clone()))
+                    {
+                        Ok(req) => req,
+                        Err(e) => {
+                            let err_msg = format!("Failed to create a request. {}", e.to_string());
 
-                        error!("{}", &err_msg);
+                            error!("{}", &err_msg);
 
-                        return Err(AssistantError::Operation(err_msg));
-                    } else {
-                        let err_msg = format!(
-                            "Failed to send server information to {}: {}",
-                            &url,
-                            e.to_string()
-                        );
+                            return Err(AssistantError::Operation(err_msg));
+                        }
+                    };
 
-                        error!("{}", &err_msg);
-                    }
+                    info!("tries ({}) to send server info to {}", retry, &url);
+                    // send the request
+                    response = match client.request(req).await {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            retry += 1;
 
-                    continue;
-                }
-            };
+                            if retry >= 3 {
+                                let err_msg = format!(
+                                    "Failed to send server information to {}: {}",
+                                    &url,
+                                    e.to_string()
+                                );
 
-            // check if the request was successful
-            match response.status().is_success() {
-                true => {
-                    info!("Server information sent to {} successfully!", &url);
-                    break;
-                }
-                false => {
-                    retry += 1;
-                    if retry >= 3 {
-                        error!("Failed to get server information from {}.", &url);
-                        break;
+                                error!("{}", &err_msg);
+
+                                return Err(AssistantError::Operation(err_msg));
+                            } else {
+                                let err_msg = format!(
+                                    "Failed to send server information to {}: {}. Retrying ({})...",
+                                    &url,
+                                    e.to_string(),
+                                    retry
+                                );
+
+                                warn!("{}", &err_msg);
+                            }
+
+                            continue;
+                        }
+                    };
+
+                    // check if the request was successful
+                    match response.status().is_success() {
+                        true => {
+                            info!("Server information sent to {} successfully!", &url);
+                            break;
+                        }
+                        false => {
+                            retry += 1;
+                            if retry >= 3 {
+                                error!("Failed to get server information from {}.", &url);
+                                break;
+                            }
+                        }
                     }
                 }
             }
+
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,7 +377,7 @@ unsafe impl Send for Notification {}
 unsafe impl Sync for Notification {}
 
 // Send a notification to a subscriber
-async fn send_notification(
+async fn send_health_status(
     client: &Client<HttpConnector>,
     url: &str,
     message: Notification,
@@ -436,9 +448,20 @@ async fn periodic_notifications(subscribers: Subscribers) {
         };
         let message = Notification { health };
         let subs = subscribers.read().await;
-        for url in subs.iter() {
-            if let Err(e) = send_notification(&client, url, message.clone()).await {
-                error!("Error sending notification to {}: {}", url, e);
+        match subs.is_empty() {
+            true => {
+                info!("Not found subsribers to notifications.");
+            }
+            false => {
+                info!("Sending notifications to all subscribers...");
+
+                for url in subs.iter() {
+                    if let Err(e) = send_health_status(&client, url, message.clone()).await {
+                        error!("Error sending notification to {}: {}", url, e);
+                    }
+                }
+
+                info!("Notification sent to all subscribers successfully!");
             }
         }
     }
