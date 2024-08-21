@@ -1,6 +1,10 @@
-use crate::{error::AssistantError, Interval, ServerLogFile, SERVER_HEALTH};
+use crate::{
+    error::AssistantError, Interval, ServerLogFile, MAX_TIME_SPAN_IN_SECONDS, SERVER_HEALTH,
+    SERVER_SOCKET_ADDRESS, TIMESTAMP_LAST_RESPONSE,
+};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use core::panic;
+use hyper::{Body, Client, Method, Request};
 use log::{error, info};
 use regex::Regex;
 use std::collections::VecDeque;
@@ -98,6 +102,8 @@ pub(crate) async fn check_server_health(
     let mut log_queue: VecDeque<LogMessage> = VecDeque::with_capacity(1);
 
     loop {
+        info!("Checking server health");
+
         let mut new_lines = String::new();
         if let Err(e) = reader.read_to_string(&mut new_lines) {
             let err_msg = format!("Unable to read log file: {}", e);
@@ -107,24 +113,58 @@ pub(crate) async fn check_server_health(
             return Err(AssistantError::Operation(err_msg));
         };
 
+        if let Some(timestamp) = TIMESTAMP_LAST_RESPONSE.get() {
+            info!("Last response timestamp: {}", timestamp.read().await);
+        }
+
         if !new_lines.is_empty() {
+            info!("num of new log messages: {}", new_lines.len());
+
             // Iterate over the new lines and analyze server health
             for line in new_lines.lines() {
                 if let Ok(log_message) = LogMessage::from_str(line) {
                     if log_message.custom_message.starts_with("endpoint") {
-                        info!("{}", line);
+                        // * capture request
+                        let endpoint = log_message
+                            .custom_message
+                            .split_whitespace()
+                            .last()
+                            .unwrap();
+                        info!("capture a request to {}", endpoint);
                         log_queue.push_back(log_message);
 
                         if log_queue.len() > 1 {
+                            // pop the last response
                             log_queue.pop_front();
                         }
-                    } else if log_message
-                        .custom_message
-                        .starts_with("response_is_success")
-                    {
-                        info!("{}", line);
+                    } else if log_message.custom_message.starts_with("response_status") {
+                        // * capture response
+                        let status = log_message
+                            .custom_message
+                            .split_whitespace()
+                            .last()
+                            .unwrap();
+                        info!("capture a response status: {}", status);
+
+                        // record the timestamp of the latest response
+                        if TIMESTAMP_LAST_RESPONSE.get().is_none() {
+                            TIMESTAMP_LAST_RESPONSE
+                                .set(RwLock::new(Utc::now()))
+                                .expect("Unable to set timestamp");
+                        } else {
+                            let mut timestamp = TIMESTAMP_LAST_RESPONSE
+                                .get()
+                                .expect("Unable to get timestamp")
+                                .write()
+                                .await;
+
+                            *timestamp = Utc::now();
+                        }
+
+                        // push the response to the queue
                         log_queue.push_back(log_message);
 
+                        // update the server health
                         if log_queue.len() > 1 {
                             if let Some(log) = log_queue.pop_front() {
                                 if !log.custom_message.starts_with("endpoint") {
@@ -161,6 +201,43 @@ pub(crate) async fn check_server_health(
                     }
                 }
             }
+        } else {
+            //* If long time no requests coming in, then invoke `ping_server` function to send a request to /v1/chat/completions endpoint */
+            // compare the current timestamp with the last response timestamp
+            if TIMESTAMP_LAST_RESPONSE.get().is_some() {
+                let timestamp = TIMESTAMP_LAST_RESPONSE.get().unwrap().read().await;
+                let current_timestamp = Utc::now();
+                let diff = current_timestamp
+                    .signed_duration_since(*timestamp)
+                    .num_seconds();
+
+                // compute the time slapsed since the last response
+                info!(
+                    "current: {}, last response: {}, diff: {}",
+                    current_timestamp, *timestamp, diff
+                );
+
+                // if the difference is greater than 60 seconds, send a request to the server
+                if diff > MAX_TIME_SPAN_IN_SECONDS {
+                    // send a request to the server
+                    if let Err(e) = ping_server().await {
+                        let err_msg = format!("{}", e);
+
+                        error!("{}", &err_msg);
+
+                        return Err(AssistantError::Operation(err_msg));
+                    }
+                }
+            } else {
+                // send a request to the server
+                if let Err(e) = ping_server().await {
+                    let err_msg = format!("{}", e);
+
+                    error!("{}", &err_msg);
+
+                    return Err(AssistantError::Operation(err_msg));
+                }
+            }
         }
 
         // Remember the current position
@@ -174,17 +251,16 @@ pub(crate) async fn check_server_health(
                 return Err(AssistantError::Operation(err_msg));
             }
         };
-        info!("current position: {}", current_position);
+        info!("position of current cursor: {}", current_position);
 
-        info!(
-            "Server health: {:?}",
-            SERVER_HEALTH.get().unwrap().read().await
-        );
+        if let Some(health) = SERVER_HEALTH.get() {
+            let health = health.read().await;
+            info!("Server health: {}", *health);
+        }
 
         // Sleep for seconds specified in the interval
         let interval = interval.read().await;
         sleep(Duration::from_secs(*interval));
-        info!("Checking server health");
 
         // Check if there are new log entries
         if let Err(e) = file.seek(SeekFrom::End(0)) {
@@ -204,7 +280,7 @@ pub(crate) async fn check_server_health(
                 return Err(AssistantError::Operation(err_msg));
             }
         };
-        info!("End position: {}", end_position);
+        info!("position of end cursor: {}", end_position);
 
         if end_position > current_position {
             // There are new log entries, seek back to the last position
@@ -226,4 +302,121 @@ pub(crate) async fn check_server_health(
             }
         }
     }
+}
+
+// Send a request to the LlamaEdge API Server
+async fn ping_server() -> Result<(), AssistantError> {
+    info!("ping api server");
+
+    // send a request to the LlamaEdge API Server to get the server information
+    let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
+    let addr = (*addr).to_string();
+    let url = format!("http://{}{}", addr, "/v1/chat/completions");
+
+    let body = r###"
+    {
+        "messages": [
+            {
+                "role": "user",
+                "content": "Who are you?"
+            }
+        ],
+        "model": "Phi-3-mini-4k-instruct",
+        "stream": false
+    }
+    "###;
+
+    // create a new request
+    let req = match Request::builder()
+        .method(Method::GET)
+        .uri(&url)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+    {
+        Ok(req) => req,
+        Err(e) => {
+            let err_msg = format!("Failed to create a request: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
+
+    // send the request
+    let client = Client::new();
+    let response = match client.request(req).await {
+        Ok(resp) => {
+            info!("Sent a chat completion request to the server");
+
+            resp
+        }
+        Err(e) => {
+            let err_msg = format!("Failed to send a request: {}", e.to_string());
+
+            error!("{}", &err_msg);
+
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
+
+    if !response.status().is_success() {
+        if SERVER_HEALTH.get().is_none() {
+            if SERVER_HEALTH.set(RwLock::new(false)).is_err() {
+                let err_msg = format!("Unable to set server health");
+
+                error!("{}", &err_msg);
+
+                return Err(AssistantError::Operation(err_msg));
+            }
+        } else {
+            match SERVER_HEALTH.get() {
+                Some(server_health) => {
+                    let mut server_health = server_health.write().await;
+
+                    *server_health = false;
+
+                    info!("Server health: {}", *server_health);
+                }
+                None => {
+                    let err_msg = format!("SERVER_HEALTH is empty or not initialized");
+
+                    error!("{}", &err_msg);
+
+                    return Err(AssistantError::Operation(err_msg));
+                }
+            }
+        }
+    } else {
+        if SERVER_HEALTH.get().is_none() {
+            if SERVER_HEALTH.set(RwLock::new(true)).is_err() {
+                let err_msg = format!("Unable to set server health");
+
+                error!("{}", &err_msg);
+
+                return Err(AssistantError::Operation(err_msg));
+            }
+        } else {
+            match SERVER_HEALTH.get() {
+                Some(server_health) => {
+                    let mut server_health = server_health.write().await;
+
+                    *server_health = true;
+
+                    info!("Server health: {}", *server_health);
+                }
+                None => {
+                    let err_msg = format!("SERVER_HEALTH is empty or not initialized");
+
+                    error!("{}", &err_msg);
+
+                    return Err(AssistantError::Operation(err_msg));
+                }
+            }
+        }
+    }
+
+    info!("Updated server health by sending a request to the server");
+
+    Ok(())
 }

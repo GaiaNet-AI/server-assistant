@@ -2,6 +2,7 @@ mod error;
 mod health;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use error::AssistantError;
 use health::{check_server_health, is_file};
@@ -15,17 +16,20 @@ use std::{collections::HashSet, fs::File, io::Write, net::SocketAddr, sync::Arc}
 use tokio::{sync::RwLock, time::Duration};
 
 type Subscribers = Arc<RwLock<HashSet<String>>>;
-type ServerSocketAddr = Arc<RwLock<SocketAddr>>;
 pub(crate) type ServerLogFile = Arc<RwLock<String>>;
 pub(crate) type Interval = Arc<RwLock<u64>>;
 
 // default socket address of LlamaEdge API Server instance
 const DEFAULT_SERVER_SOCKET_ADDRESS: &str = "0.0.0.0:8080";
+pub(crate) const MAX_TIME_SPAN_IN_SECONDS: i64 = 30;
 
 // server info
 pub(crate) static SERVER_INFO: OnceCell<RwLock<Value>> = OnceCell::new();
 // server health
 static SERVER_HEALTH: OnceCell<RwLock<bool>> = OnceCell::new();
+// timestamp of the last response
+pub(crate) static TIMESTAMP_LAST_RESPONSE: OnceCell<RwLock<DateTime<Utc>>> = OnceCell::new();
+pub(crate) static SERVER_SOCKET_ADDRESS: OnceCell<RwLock<SocketAddr>> = OnceCell::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Payload {
@@ -98,7 +102,17 @@ async fn main() -> Result<(), AssistantError> {
         .parse::<SocketAddr>()
         .map_err(|e| AssistantError::SocketAddr(e.to_string()))?;
     info!("Socket address of API server: {}", &server_addr);
-    let server_addr = Arc::new(RwLock::new(server_addr));
+    if let Err(addr) = SERVER_SOCKET_ADDRESS.set(RwLock::new(server_addr)) {
+        let addr = addr.read().await;
+        let err_msg = format!(
+            "Failed to store the server address: {}",
+            (*addr).to_string()
+        );
+
+        error!("{}", &err_msg);
+
+        return Err(AssistantError::Operation(err_msg));
+    }
 
     // parse the path to the api server log file
     let server_log_file = cli.server_log_file;
@@ -139,7 +153,7 @@ async fn main() -> Result<(), AssistantError> {
 
     let push_info_handle = tokio::spawn(async move {
         // retrieve server information
-        retrieve_server_info(Arc::clone(&server_addr)).await?;
+        retrieve_server_info().await?;
 
         // push server information to all subscribers
         match push_server_info(server_info_subscribers.clone()).await {
@@ -205,11 +219,13 @@ async fn main() -> Result<(), AssistantError> {
 }
 
 // Retrieve server information from the LlamaEdge API Server
-async fn retrieve_server_info(socket_addr: ServerSocketAddr) -> Result<(), AssistantError> {
+async fn retrieve_server_info() -> Result<(), AssistantError> {
     // send a request to the LlamaEdge API Server to get the server information
-    let addr = socket_addr.read().await;
+    let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
     let addr = (*addr).to_string();
     let url = format!("http://{}{}", addr, "/v1/info");
+
+    info!("Retrieving server information from: {}", &url);
 
     // create a new request
     let req = match Request::builder()
