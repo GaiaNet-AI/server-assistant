@@ -308,7 +308,7 @@ async fn retrieve_server_info(
             return Err(AssistantError::Operation(err_msg));
         }
     };
-    info!("Server Information: {}", server_info.to_string());
+    info!("raw server info: {}", server_info.to_string());
 
     // get the server type
     let server_type = match server_info["api_server"]["type"].as_str() {
@@ -321,10 +321,16 @@ async fn retrieve_server_info(
             return Err(AssistantError::Operation(err_msg));
         }
     };
+    info!("server type: {}", server_type);
 
     // add the rag prompt to the server information if the server type is `rag`
     if server_type == "rag" {
         if let Some(map) = server_info.as_object_mut() {
+            info!(
+                "insert rag prompt to server info: {}",
+                system_prompt.as_ref()
+            );
+
             map.insert(
                 "rag_prompt".to_string(),
                 serde_json::Value::String(rag_prompt.as_ref().to_string()),
@@ -334,11 +340,18 @@ async fn retrieve_server_info(
 
     // add the system prompt to the server information
     if let Some(extra) = server_info["extras"].as_object_mut() {
+        info!(
+            "insert system prompt to server info: {}",
+            system_prompt.as_ref()
+        );
+
         extra.insert(
             "system_prompt".to_string(),
             serde_json::Value::String(system_prompt.as_ref().to_string()),
         );
     }
+
+    info!("set SERVER_INFO: {}", server_info.to_string());
 
     // store the server information
     if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
