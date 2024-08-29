@@ -54,6 +54,12 @@ struct Cli {
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
+    /// System prompt from config.json
+    #[arg(long)]
+    system_prompt: Option<String>,
+    /// RAG prompt from config.json
+    #[arg(long, default_value = "")]
+    rag_prompt: Option<String>,
     /// log file
     #[arg(long, default_value = "assistant.log")]
     log: String,
@@ -143,6 +149,14 @@ async fn main() -> Result<(), AssistantError> {
     info!("Interval of checking server health: {}", &interval);
     let interval: Interval = Arc::new(RwLock::new(interval));
 
+    // parse the system prompt
+    let system_prompt = cli.system_prompt.unwrap_or_default();
+    info!("System prompt: {}", &system_prompt);
+
+    // parse the rag prompt
+    let rag_prompt = cli.rag_prompt.unwrap_or_default();
+    info!("RAG prompt: {}", &rag_prompt);
+
     // add subscribers for server info
     let server_info_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
     info!("Add subscriber for server info: {}", &cli.server_info_url);
@@ -153,7 +167,7 @@ async fn main() -> Result<(), AssistantError> {
 
     let push_info_handle = tokio::spawn(async move {
         // retrieve server information
-        retrieve_server_info().await?;
+        retrieve_server_info(&system_prompt, &rag_prompt).await?;
 
         // push server information to all subscribers
         match push_server_info(server_info_subscribers.clone()).await {
@@ -219,7 +233,10 @@ async fn main() -> Result<(), AssistantError> {
 }
 
 // Retrieve server information from the LlamaEdge API Server
-async fn retrieve_server_info() -> Result<(), AssistantError> {
+async fn retrieve_server_info(
+    system_prompt: impl AsRef<str>,
+    rag_prompt: impl AsRef<str>,
+) -> Result<(), AssistantError> {
     // send a request to the LlamaEdge API Server to get the server information
     let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
     let addr = (*addr).to_string();
@@ -278,7 +295,7 @@ async fn retrieve_server_info() -> Result<(), AssistantError> {
             return Err(AssistantError::Operation(err_msg));
         }
     };
-    let server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+    let mut server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
         Ok(json) => json,
         Err(e) => {
             let err_msg = format!(
@@ -292,6 +309,36 @@ async fn retrieve_server_info() -> Result<(), AssistantError> {
         }
     };
     info!("Server Information: {}", server_info.to_string());
+
+    // get the server type
+    let server_type = match server_info["api_server"]["type"].as_str() {
+        Some(server_type) => server_type.to_string(),
+        None => {
+            let err_msg = "Failed to get the server type.".to_string();
+
+            error!("{}", &err_msg);
+
+            return Err(AssistantError::Operation(err_msg));
+        }
+    };
+
+    // add the rag prompt to the server information if the server type is `rag`
+    if server_type == "rag" {
+        if let Some(map) = server_info.as_object_mut() {
+            map.insert(
+                "rag_prompt".to_string(),
+                serde_json::Value::String(rag_prompt.as_ref().to_string()),
+            );
+        }
+    }
+
+    // add the system prompt to the server information
+    if let Some(extra) = server_info["extras"].as_object_mut() {
+        extra.insert(
+            "system_prompt".to_string(),
+            serde_json::Value::String(system_prompt.as_ref().to_string()),
+        );
+    }
 
     // store the server information
     if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
