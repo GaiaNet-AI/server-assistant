@@ -204,6 +204,21 @@ async fn main() -> Result<(), AssistantError> {
     let interval_clone = Arc::clone(&interval);
     let health_check_handle = tokio::spawn(async move {
         if let Err(e) = check_server_health(server_log_file_clone, interval_clone).await {
+            if SERVER_HEALTH.get().is_none() {
+                SERVER_HEALTH
+                    .set(RwLock::new(false))
+                    .expect("Unable to set server health");
+            } else {
+                let mut server_health = SERVER_HEALTH
+                    .get()
+                    .expect("Unable to get server health")
+                    .write()
+                    .await;
+                if *server_health {
+                    *server_health = false;
+                }
+            }
+
             let err_msg = format!("Failed to check server health: {}", e);
 
             error!("{}", &err_msg);

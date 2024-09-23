@@ -178,8 +178,9 @@ pub(crate) async fn check_server_health(
                                             .expect("Unable to get server health")
                                             .write()
                                             .await;
-
-                                        *server_health = false;
+                                        if *server_health {
+                                            *server_health = false;
+                                        }
                                     }
                                 } else {
                                     if SERVER_HEALTH.get().is_none() {
@@ -192,8 +193,9 @@ pub(crate) async fn check_server_health(
                                             .expect("Unable to get server health")
                                             .write()
                                             .await;
-
-                                        *server_health = true;
+                                        if !*server_health {
+                                            *server_health = true;
+                                        }
                                     }
                                 }
                             }
@@ -221,6 +223,21 @@ pub(crate) async fn check_server_health(
                 if diff > MAX_TIME_SPAN_IN_SECONDS {
                     // send a request to the server
                     if let Err(e) = ping_server().await {
+                        if SERVER_HEALTH.get().is_none() {
+                            SERVER_HEALTH
+                                .set(RwLock::new(false))
+                                .expect("Unable to set server health");
+                        } else {
+                            let mut server_health = SERVER_HEALTH
+                                .get()
+                                .expect("Unable to get server health")
+                                .write()
+                                .await;
+                            if *server_health {
+                                *server_health = false;
+                            }
+                        }
+
                         let err_msg = format!("{}", e);
 
                         error!("{}", &err_msg);
@@ -231,6 +248,21 @@ pub(crate) async fn check_server_health(
             } else {
                 // send a request to the server
                 if let Err(e) = ping_server().await {
+                    if SERVER_HEALTH.get().is_none() {
+                        SERVER_HEALTH
+                            .set(RwLock::new(false))
+                            .expect("Unable to set server health");
+                    } else {
+                        let mut server_health = SERVER_HEALTH
+                            .get()
+                            .expect("Unable to get server health")
+                            .write()
+                            .await;
+                        if *server_health {
+                            *server_health = false;
+                        }
+                    }
+
                     let err_msg = format!("{}", e);
 
                     error!("{}", &err_msg);
@@ -335,6 +367,21 @@ async fn ping_server() -> Result<(), AssistantError> {
     {
         Ok(req) => req,
         Err(e) => {
+            if SERVER_HEALTH.get().is_none() {
+                SERVER_HEALTH
+                    .set(RwLock::new(false))
+                    .expect("Unable to set server health");
+            } else {
+                let mut server_health = SERVER_HEALTH
+                    .get()
+                    .expect("Unable to get server health")
+                    .write()
+                    .await;
+                if *server_health {
+                    *server_health = false;
+                }
+            }
+
             let err_msg = format!("Failed to create a request: {}", e.to_string());
 
             error!("{}", &err_msg);
@@ -352,6 +399,21 @@ async fn ping_server() -> Result<(), AssistantError> {
             resp
         }
         Err(e) => {
+            if SERVER_HEALTH.get().is_none() {
+                SERVER_HEALTH
+                    .set(RwLock::new(false))
+                    .expect("Unable to set server health");
+            } else {
+                let mut server_health = SERVER_HEALTH
+                    .get()
+                    .expect("Unable to get server health")
+                    .write()
+                    .await;
+                if *server_health {
+                    *server_health = false;
+                }
+            }
+
             let err_msg = format!("Failed to send a request: {}", e.to_string());
 
             error!("{}", &err_msg);
