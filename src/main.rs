@@ -45,12 +45,12 @@ struct Cli {
     /// Path to the `start-llamaedge.log` file
     #[arg(long)]
     server_log_file: String,
-    /// Target URL for sending server information
-    #[arg(long)]
-    server_info_url: String,
-    /// Target URL for sending server health
-    #[arg(long)]
-    server_health_url: String,
+    /// Device id
+    #[arg(long, required = true)]
+    device_id: String,
+    /// Domain
+    #[arg(long, required = true)]
+    domain: String,
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
@@ -132,16 +132,20 @@ async fn main() -> Result<(), AssistantError> {
     info!("Log file of API server: {}", &server_log_file);
     let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
 
-    // parse the target URL for sending server information
-    info!(
-        "Target URL for sending server info: {}",
-        &cli.server_info_url
+    // parse the device id
+    info!("Device ID: {}", &cli.device_id);
+
+    // parse the domain
+    info!("Domain: {}", &cli.domain);
+
+    let server_info_url = format!(
+        "https://hub.domain.{}/device-info/{}",
+        &cli.domain, &cli.device_id
     );
 
-    // parse the target URL for sending server health
-    info!(
-        "Target URL for sending server health: {}",
-        &cli.server_health_url
+    let server_health_url = format!(
+        "https://hub.domain.{}/device-health/{}",
+        &cli.domain, &cli.device_id
     );
 
     // parse the interval of checking server health
@@ -159,11 +163,11 @@ async fn main() -> Result<(), AssistantError> {
 
     // add subscribers for server info
     let server_info_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
-    info!("Add subscriber for server info: {}", &cli.server_info_url);
+    info!("Add subscriber for server info: {}", &server_info_url);
     server_info_subscribers
         .write()
         .await
-        .insert(cli.server_info_url);
+        .insert(server_info_url);
 
     let push_info_handle = tokio::spawn(async move {
         // retrieve server information
@@ -190,14 +194,11 @@ async fn main() -> Result<(), AssistantError> {
 
     // add subscribers for server health
     let server_health_subscribers: Subscribers = Arc::new(RwLock::new(HashSet::new()));
-    info!(
-        "Add subscriber for server health: {}",
-        &cli.server_health_url
-    );
+    info!("Add subscriber for server health: {}", &server_health_url);
     server_health_subscribers
         .write()
         .await
-        .insert(cli.server_health_url);
+        .insert(server_health_url);
 
     // check server health periodically
     let server_log_file_clone = Arc::clone(&server_log_file);
