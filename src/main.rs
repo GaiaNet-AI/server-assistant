@@ -12,7 +12,7 @@ use log::{error, info, warn};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashSet, fs::File, io::Write, net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, fs::File, io::Write, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{sync::RwLock, time::Duration};
 
 type Subscribers = Arc<RwLock<HashSet<String>>>;
@@ -45,12 +45,9 @@ struct Cli {
     /// Path to the `start-llamaedge.log` file
     #[arg(long)]
     server_log_file: String,
-    /// Device id
+    /// Path to gaianet directory
     #[arg(long, required = true)]
-    device_id: String,
-    /// Domain
-    #[arg(long, required = true)]
-    domain: String,
+    gaianet_dir: PathBuf,
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
@@ -132,20 +129,127 @@ async fn main() -> Result<(), AssistantError> {
     info!("Log file of API server: {}", &server_log_file);
     let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
 
-    // parse the device id
-    info!("Device ID: {}", &cli.device_id);
+    // get the device id and domain
 
-    // parse the domain
-    info!("Domain: {}", &cli.domain);
+    // get device id from frpc.toml
+    let frpc_toml = cli.gaianet_dir.join("gaia-frp").join("frpc.toml");
+    if !is_file(&frpc_toml).await {
+        error!(
+            "Invalid frpc.toml file path: {}",
+            &frpc_toml.to_string_lossy()
+        );
+        return Err(AssistantError::ArgumentError(format!(
+            "Invalid frpc.toml file path: {}",
+            &frpc_toml.to_string_lossy()
+        )));
+    }
+    let toml_content = match tokio::fs::read_to_string(&frpc_toml).await {
+        Ok(content) => content,
+        Err(e) => {
+            error!(
+                "Failed to read the content of frpc.toml file: {}",
+                e.to_string()
+            );
+            return Err(AssistantError::Operation(format!(
+                "Failed to read the content of frpc.toml file: {}",
+                e.to_string()
+            )));
+        }
+    };
+    let toml_value: toml::Value = match toml::from_str(&toml_content) {
+        Ok(value) => value,
+        Err(e) => {
+            error!(
+                "Failed to parse the content of frpc.toml file: {}",
+                e.to_string()
+            );
+            return Err(AssistantError::Operation(format!(
+                "Failed to parse the content of frpc.toml file: {}",
+                e.to_string()
+            )));
+        }
+    };
+    let device_id = match toml_value.get("metadatas") {
+        Some(metadata) => match metadata.get("deviceId") {
+            Some(device_id) => match device_id.as_str() {
+                Some(device_id) => device_id.to_string(),
+                None => {
+                    error!("Failed to get the device id from frpc.toml file.");
+                    return Err(AssistantError::Operation(
+                        "Failed to get the device id from frpc.toml file.".to_string(),
+                    ));
+                }
+            },
+            None => {
+                error!("Failed to get the device id from frpc.toml file.");
+                return Err(AssistantError::Operation(
+                    "Failed to get the device id from frpc.toml file.".to_string(),
+                ));
+            }
+        },
+        None => {
+            error!("Failed to get the metadatas from frpc.toml file.");
+            return Err(AssistantError::Operation(
+                "Failed to get the metadatas from frpc.toml file.".to_string(),
+            ));
+        }
+    };
+    info!("Device ID: {}", &device_id);
 
-    let server_info_url = format!(
-        "https://hub.domain.{}/device-info/{}",
-        &cli.domain, &cli.device_id
-    );
+    // get domain from config.json
+    let config_json = cli.gaianet_dir.join("config.json");
+    if !is_file(&config_json).await {
+        error!(
+            "Invalid config.json file path: {}",
+            &config_json.to_string_lossy()
+        );
+        return Err(AssistantError::ArgumentError(format!(
+            "Invalid config.json file path: {}",
+            &config_json.to_string_lossy()
+        )));
+    }
+    let config_content = match tokio::fs::read_to_string(&config_json).await {
+        Ok(content) => content,
+        Err(e) => {
+            error!(
+                "Failed to read the content of config.json file: {}",
+                e.to_string()
+            );
+            return Err(AssistantError::Operation(format!(
+                "Failed to read the content of config.json file: {}",
+                e.to_string()
+            )));
+        }
+    };
+    let config_value: serde_json::Value = match serde_json::from_str(&config_content) {
+        Ok(value) => value,
+        Err(e) => {
+            error!(
+                "Failed to parse the content of config.json file: {}",
+                e.to_string()
+            );
+            return Err(AssistantError::Operation(format!(
+                "Failed to parse the content of config.json file: {}",
+                e.to_string()
+            )));
+        }
+    };
+    let domain = match config_value["domain"].as_str() {
+        Some(domain) => domain.to_string(),
+        None => {
+            error!("Failed to get the domain from config.json file.");
+            return Err(AssistantError::Operation(
+                "Failed to get the domain from config.json file.".to_string(),
+            ));
+        }
+    };
+    info!("Domain: {}", &domain);
+
+    let server_info_url = format!("https://hub.domain.{}/device-info/{}", &domain, &device_id);
 
     let server_health_url = format!(
         "https://hub.domain.{}/device-health/{}",
-        &cli.domain, &cli.device_id
+        &domain, &device_id
     );
 
     // parse the interval of checking server health
