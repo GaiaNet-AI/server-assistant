@@ -350,7 +350,7 @@ async fn ping_server() -> Result<(), AssistantError> {
         "messages": [
             {
                 "role": "user",
-                "content": "Who are you?"
+                "content": "Who are you? <server-health>"
             }
         ],
         "model": "Phi-3-mini-4k-instruct",
