@@ -160,22 +160,42 @@ pub(crate) async fn check_server_health(
                             }
                         }
 
-                        match SERVER_HEALTH.get() {
-                            Some(server_health) => {
-                                let mut healthy = server_health.write().await;
+                        if status_code == "500" {
+                            match SERVER_HEALTH.get() {
+                                Some(server_health) => {
+                                    let mut healthy = server_health.write().await;
 
-                                if !*healthy {
-                                    *healthy = true;
+                                    if *healthy {
+                                        *healthy = false;
+                                    }
                                 }
-                            }
-                            None => {
-                                SERVER_HEALTH
-                                    .set(RwLock::new(true))
-                                    .expect("Failed to set SERVER_HEALTH");
-                            }
-                        };
+                                None => {
+                                    SERVER_HEALTH
+                                        .set(RwLock::new(false))
+                                        .expect("Failed to set SERVER_HEALTH");
+                                }
+                            };
 
-                        info!("Update SERVER_HEALTH to true");
+                            info!("Update SERVER_HEALTH to false");
+                        } else {
+                            match SERVER_HEALTH.get() {
+                                Some(server_health) => {
+                                    let mut healthy = server_health.write().await;
+
+                                    if !*healthy {
+                                        *healthy = true;
+                                    }
+                                }
+                                None => {
+                                    SERVER_HEALTH
+                                        .set(RwLock::new(true))
+                                        .expect("Failed to set SERVER_HEALTH");
+                                }
+                            };
+
+                            info!("Update SERVER_HEALTH to true");
+                        }
+
                         updated = true;
 
                         break;
@@ -323,7 +343,8 @@ pub(crate) async fn check_server_health(
                                             if err_msg.contains("Qdrant error:") {
                                                 match SERVER_HEALTH.get() {
                                                     Some(server_health) => {
-                                                        let mut healthy = server_health.write().await;
+                                                        let mut healthy =
+                                                            server_health.write().await;
 
                                                         if *healthy {
                                                             *healthy = false;
@@ -340,7 +361,8 @@ pub(crate) async fn check_server_health(
                                             } else {
                                                 match SERVER_HEALTH.get() {
                                                     Some(server_health) => {
-                                                        let mut healthy = server_health.write().await;
+                                                        let mut healthy =
+                                                            server_health.write().await;
 
                                                         if !*healthy {
                                                             *healthy = true;
