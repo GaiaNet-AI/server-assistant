@@ -8,7 +8,7 @@ use error::AssistantError;
 use health::{check_server_health, is_file};
 use hyper::{client::HttpConnector, Body, Client, Method, Request, Response};
 use hyper_tls::HttpsConnector;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +28,7 @@ pub(crate) static SERVER_INFO: OnceCell<RwLock<Value>> = OnceCell::new();
 // server health
 static SERVER_HEALTH: OnceCell<RwLock<bool>> = OnceCell::new();
 // timestamp of the last response
-pub(crate) static TIMESTAMP_LAST_RESPONSE: OnceCell<RwLock<DateTime<Utc>>> = OnceCell::new();
+pub(crate) static TIMESTAMP_LAST_ACCESS_LOG: OnceCell<RwLock<DateTime<Utc>>> = OnceCell::new();
 pub(crate) static SERVER_SOCKET_ADDRESS: OnceCell<RwLock<SocketAddr>> = OnceCell::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,18 +309,18 @@ async fn main() -> Result<(), AssistantError> {
     let interval_clone = Arc::clone(&interval);
     let health_check_handle = tokio::spawn(async move {
         if let Err(e) = check_server_health(server_log_file_clone, interval_clone).await {
-            if SERVER_HEALTH.get().is_none() {
-                SERVER_HEALTH
-                    .set(RwLock::new(false))
-                    .expect("Unable to set server health");
-            } else {
-                let mut server_health = SERVER_HEALTH
-                    .get()
-                    .expect("Unable to get server health")
-                    .write()
-                    .await;
-                if *server_health {
-                    *server_health = false;
+            match SERVER_HEALTH.get() {
+                Some(server_health) => {
+                    let mut healthy = server_health.write().await;
+
+                    if *healthy {
+                        *healthy = false;
+                    }
+                }
+                None => {
+                    SERVER_HEALTH
+                        .set(RwLock::new(false))
+                        .expect("Failed to set SERVER_HEALTH");
                 }
             }
 
@@ -428,7 +428,7 @@ async fn retrieve_server_info(
             return Err(AssistantError::Operation(err_msg));
         }
     };
-    info!("raw server info: {}", server_info.to_string());
+    debug!("raw server info: {}", server_info.to_string());
 
     // get the server type
     let server_type = match server_info["api_server"]["type"].as_str() {
