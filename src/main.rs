@@ -471,6 +471,17 @@ async fn retrieve_server_info(
         );
     }
 
+    // get system info
+    let system_info = system_info_lite::get_system_info();
+    info!("hardware info: {:?}", system_info);
+
+    let sys_info = serde_json::to_value(system_info).unwrap();
+
+    // add hardware info to the server information
+    if let Some(map) = server_info.as_object_mut() {
+        map.insert("hardware".to_string(), sys_info);
+    }
+
     info!("set SERVER_INFO: {}", server_info.to_string());
 
     // store the server information
