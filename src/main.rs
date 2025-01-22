@@ -252,6 +252,42 @@ async fn main() -> Result<(), AssistantError> {
         &domain, &device_id
     );
 
+    // compute sha256 of chat model
+    let mut sha256_chat_model = String::new();
+    if let Some(chat_url) = config_value["chat"].as_str() {
+        if !chat_url.is_empty() {
+            if let Some(chat_model_name) = chat_url.split("/").last() {
+                let chat_model_name = chat_model_name.to_string();
+                let chat_model = cli.gaianet_dir.join(&chat_model_name);
+                if chat_model.exists() {
+                    // compute sha256 of chat model
+                    if let Ok(hash) = sha256::try_digest(chat_model) {
+                        sha256_chat_model = hash;
+                        info!("sha256 of chat model: {}", &sha256_chat_model);
+                    }
+                }
+            }
+        }
+    }
+
+    // compute sha256 of embedding model
+    let mut sha256_embedding_model = String::new();
+    if let Some(embedding_url) = config_value["embedding"].as_str() {
+        if !embedding_url.is_empty() {
+            if let Some(embedding_model_name) = embedding_url.split("/").last() {
+                let embedding_model_name = embedding_model_name.to_string();
+                let embedding_model = cli.gaianet_dir.join(&embedding_model_name);
+                if embedding_model.exists() {
+                    // compute sha256 of embedding model
+                    if let Ok(hash) = sha256::try_digest(embedding_model) {
+                        sha256_embedding_model = hash;
+                        info!("sha256 of embedding model: {}", &sha256_embedding_model);
+                    }
+                }
+            }
+        }
+    }
+
     // parse the interval of checking server health
     let interval = cli.interval;
     info!("Interval of checking server health: {}", &interval);
@@ -275,7 +311,13 @@ async fn main() -> Result<(), AssistantError> {
 
     let push_info_handle = tokio::spawn(async move {
         // retrieve server information
-        retrieve_server_info(&system_prompt, &rag_prompt).await?;
+        retrieve_server_info(
+            &system_prompt,
+            &rag_prompt,
+            &sha256_chat_model,
+            &sha256_embedding_model,
+        )
+        .await?;
 
         // push server information to all subscribers
         match push_server_info(server_info_subscribers.clone()).await {
@@ -356,6 +398,8 @@ async fn main() -> Result<(), AssistantError> {
 async fn retrieve_server_info(
     system_prompt: impl AsRef<str>,
     rag_prompt: impl AsRef<str>,
+    sha256_chat_model: impl AsRef<str>,
+    sha256_embedding_model: impl AsRef<str>,
 ) -> Result<(), AssistantError> {
     // send a request to the LlamaEdge API Server to get the server information
     let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
@@ -469,6 +513,26 @@ async fn retrieve_server_info(
             "system_prompt".to_string(),
             serde_json::Value::String(system_prompt.as_ref().to_string()),
         );
+    }
+
+    // add sha256 of chat model to the server information
+    if let Some(map) = server_info["chat_model"].as_object_mut() {
+        if !sha256_chat_model.as_ref().is_empty() {
+            map.insert(
+                "sha256".to_string(),
+                serde_json::Value::String(sha256_chat_model.as_ref().to_string()),
+            );
+        }
+    }
+
+    // add sha256 of embedding model to the server information
+    if let Some(map) = server_info["embedding_model"].as_object_mut() {
+        if !sha256_embedding_model.as_ref().is_empty() {
+            map.insert(
+                "sha256".to_string(),
+                serde_json::Value::String(sha256_embedding_model.as_ref().to_string()),
+            );
+        }
     }
 
     // get system info

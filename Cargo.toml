@@ -19,6 +19,7 @@ log = "0.4.22"
 env_logger = "0.11.5"
 toml = "^0.8"
 system-info-lite = { version = "0.1.1", git = "https://github.com/apepkuss/system_info.git", branch = "main" }
+sha256 = "1.5.0"
 
 [[bin]]
 name = "gaias"
