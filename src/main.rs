@@ -42,21 +42,12 @@ struct Cli {
     /// Socket address of LlamaEdge API Server instance
     #[arg(long, default_value = DEFAULT_SERVER_SOCKET_ADDRESS)]
     server_socket_addr: String,
-    /// Path to the `start-llamaedge.log` file
-    #[arg(long)]
-    server_log_file: String,
     /// Path to gaianet directory
     #[arg(long, required = true)]
     gaianet_dir: PathBuf,
     /// Interval in seconds for sending notifications
     #[arg(short, long, default_value = "10")]
     interval: u64,
-    /// System prompt from config.json
-    #[arg(long)]
-    system_prompt: Option<String>,
-    /// RAG prompt from config.json
-    #[arg(long, default_value = "")]
-    rag_prompt: Option<String>,
     /// log file
     #[arg(long, default_value = "assistant.log")]
     log: String,
@@ -117,19 +108,15 @@ async fn main() -> Result<(), AssistantError> {
         return Err(AssistantError::Operation(err_msg));
     }
 
-    // parse the path to the api server log file
-    let server_log_file = cli.server_log_file;
-    if !is_file(&server_log_file).await {
-        error!("Invalid log file path: {}", &server_log_file);
-        return Err(AssistantError::ArgumentError(format!(
-            "Invalid log file path: {}",
-            &server_log_file
-        )));
+    let server_log_file = cli.gaianet_dir.join("log").join("start-llamaedge.log");
+    if !server_log_file.exists() || !is_file(&server_log_file).await {
+        let err_msg = format!("Invalid log file path: {}", &server_log_file.display());
+        error!("{}", &err_msg);
+        return Err(AssistantError::ArgumentError(err_msg));
     }
-    info!("Log file of API server: {}", &server_log_file);
-    let server_log_file: ServerLogFile = Arc::new(RwLock::new(server_log_file));
-
-    // get the device id and domain
+    info!("Log file of API server: {}", &server_log_file.display());
+    let server_log_file: ServerLogFile =
+        Arc::new(RwLock::new(server_log_file.to_string_lossy().to_string()));
 
     // get device id from frpc.toml
     let frpc_toml = cli.gaianet_dir.join("gaia-frp").join("frpc.toml");
@@ -294,11 +281,21 @@ async fn main() -> Result<(), AssistantError> {
     let interval: Interval = Arc::new(RwLock::new(interval));
 
     // parse the system prompt
-    let system_prompt = cli.system_prompt.unwrap_or_default();
+    let mut system_prompt = String::new();
+    if let Some(prompt) = config_value["system_prompt"].as_str() {
+        if !prompt.is_empty() {
+            system_prompt = prompt.to_string();
+        }
+    }
     info!("System prompt: {}", &system_prompt);
 
     // parse the rag prompt
-    let rag_prompt = cli.rag_prompt.unwrap_or_default();
+    let mut rag_prompt = String::new();
+    if let Some(prompt) = config_value["rag_prompt"].as_str() {
+        if !prompt.is_empty() {
+            rag_prompt = prompt.to_string();
+        }
+    }
     info!("RAG prompt: {}", &rag_prompt);
 
     // add subscribers for server info
