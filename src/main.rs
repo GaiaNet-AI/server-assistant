@@ -6,8 +6,6 @@ use chrono::{DateTime, Utc};
 use clap::Parser;
 use error::AssistantError;
 use health::{check_server_health, is_file};
-use hyper::{client::HttpConnector, Body, Client, Method, Request, Response};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use log::{debug, error, info, warn};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
@@ -98,10 +96,7 @@ async fn main() -> Result<(), AssistantError> {
     info!("Socket address of API server: {}", &server_addr);
     if let Err(addr) = SERVER_SOCKET_ADDRESS.set(RwLock::new(server_addr)) {
         let addr = addr.read().await;
-        let err_msg = format!(
-            "Failed to store the server address: {}",
-            (*addr).to_string()
-        );
+        let err_msg = format!("Failed to store the server address: {}", (*addr));
 
         error!("{}", &err_msg);
 
@@ -139,7 +134,7 @@ async fn main() -> Result<(), AssistantError> {
             );
             return Err(AssistantError::Operation(format!(
                 "Failed to read the content of frpc.toml file: {}",
-                e.to_string()
+                e
             )));
         }
     };
@@ -152,7 +147,7 @@ async fn main() -> Result<(), AssistantError> {
             );
             return Err(AssistantError::Operation(format!(
                 "Failed to parse the content of frpc.toml file: {}",
-                e.to_string()
+                e
             )));
         }
     };
@@ -204,7 +199,7 @@ async fn main() -> Result<(), AssistantError> {
             );
             return Err(AssistantError::Operation(format!(
                 "Failed to read the content of config.json file: {}",
-                e.to_string()
+                e
             )));
         }
     };
@@ -217,7 +212,7 @@ async fn main() -> Result<(), AssistantError> {
             );
             return Err(AssistantError::Operation(format!(
                 "Failed to parse the content of config.json file: {}",
-                e.to_string()
+                e
             )));
         }
     };
@@ -323,14 +318,11 @@ async fn main() -> Result<(), AssistantError> {
                 Ok(())
             }
             Err(e) => {
-                let err_msg = format!(
-                    "Failed to push server info to subscribers. {}",
-                    e.to_string()
-                );
+                let err_msg = format!("Failed to push server info to subscribers. {}", e);
 
                 error!("{}", &err_msg);
 
-                return Err(AssistantError::Operation(err_msg));
+                Err(AssistantError::Operation(err_msg))
             }
         }
     });
@@ -399,73 +391,44 @@ async fn retrieve_server_info(
     sha256_embedding_model: impl AsRef<str>,
 ) -> Result<(), AssistantError> {
     // send a request to the LlamaEdge API Server to get the server information
-    let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
+    let addr = SERVER_SOCKET_ADDRESS
+        .get()
+        .ok_or_else(|| AssistantError::Operation("Failed to get the server address".to_string()))?
+        .read()
+        .await;
     let addr = (*addr).to_string();
+    // Convert 0.0.0.0 to localhost
+    let addr = addr.replace("0.0.0.0", "localhost");
     let url = format!("http://{}{}", addr, "/v1/info");
 
     info!("Retrieving server information from: {}", &url);
 
-    // create a new request
-    let req = match Request::builder()
-        .method(Method::GET)
-        .uri(&url)
-        .header("Content-Type", "application/json")
-        .body(Body::empty())
-    {
-        Ok(req) => req,
-        Err(e) => {
-            let err_msg = format!("Failed to create a request: {}", e.to_string());
-
-            error!("{}", &err_msg);
-
-            return Err(AssistantError::Operation(err_msg));
-        }
-    };
-
-    // send the request
-    let client = Client::new();
-    let response = match client.request(req).await {
+    // create a new reqwest client
+    let client = reqwest::Client::new();
+    let response = match client.get(&url).send().await {
         Ok(resp) => resp,
         Err(e) => {
-            let err_msg = format!("Failed to send a request: {}", e.to_string());
-
+            let err_msg = format!("Failed to send a request: {}", e);
             error!("{}", &err_msg);
-
             return Err(AssistantError::Operation(err_msg));
         }
     };
+
     if !response.status().is_success() {
         let err_msg = format!(
             "Failed to get server info from API Server. Status: {}",
             response.status()
         );
-
         error!("{}", &err_msg);
-
         return Err(AssistantError::Operation(err_msg));
     }
 
-    // parse the server information from the response
-    let body_bytes = match hyper::body::to_bytes(response.into_body()).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let err_msg = format!("Failed to read the body of the response: {}", e.to_string());
-
-            error!("{}", &err_msg);
-
-            return Err(AssistantError::Operation(err_msg));
-        }
-    };
-    let mut server_info = match serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+    // parse the response
+    let mut server_info = match response.json::<serde_json::Value>().await {
         Ok(json) => json,
         Err(e) => {
-            let err_msg = format!(
-                "Failed to parse the body of the response: {}",
-                e.to_string()
-            );
-
+            let err_msg = format!("Failed to parse the response: {}", e);
             error!("{}", &err_msg);
-
             return Err(AssistantError::Operation(err_msg));
         }
     };
@@ -476,9 +439,7 @@ async fn retrieve_server_info(
         Some(server_type) => server_type.to_string(),
         None => {
             let err_msg = "Failed to get the server type.".to_string();
-
             error!("{}", &err_msg);
-
             return Err(AssistantError::Operation(err_msg));
         }
     };
@@ -491,7 +452,6 @@ async fn retrieve_server_info(
                 "insert rag prompt to server info: {}",
                 system_prompt.as_ref()
             );
-
             map.insert(
                 "rag_prompt".to_string(),
                 serde_json::Value::String(rag_prompt.as_ref().to_string()),
@@ -551,7 +511,7 @@ async fn retrieve_server_info(
     info!("set SERVER_INFO: {}", server_info.to_string());
 
     // store the server information
-    if let Err(_) = SERVER_INFO.set(RwLock::new(server_info)) {
+    if SERVER_INFO.set(RwLock::new(server_info)).is_err() {
         let err_msg = "Failed to store the server information.";
 
         error!("{}", err_msg);
@@ -584,96 +544,63 @@ async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError
             };
             let server_info = server_info.read().await;
 
-            // create an HTTPS connector
-            let https = HttpsConnectorBuilder::new()
-                .with_webpki_roots()
-                .https_only()
-                .enable_http1()
-                .build();
-
-            let client = Client::builder().build::<_, Body>(https);
-
             let server_info_str = match serde_json::to_string(&*server_info) {
                 Ok(info) => info,
                 Err(e) => {
-                    let err_msg = format!(
-                        "Failed to serialize the server information. {}",
-                        e.to_string()
-                    );
-
+                    let err_msg = format!("Failed to serialize the server information. {}", e);
                     error!("{}", &err_msg);
-
                     return Err(AssistantError::Operation(err_msg));
                 }
             };
 
+            // 使用 reqwest 创建客户端
+            let client = reqwest::Client::new();
+
             for url in subs.iter() {
                 let mut retry = 0;
-                let mut response: Response<Body>;
 
                 // retry 3 times if the request fails to send
                 loop {
-                    // create a new request
-                    let req = match Request::builder()
-                        .method(Method::POST)
-                        .uri(url.to_string())
-                        .header("Content-Type", "application/json")
-                        .body(Body::from(server_info_str.clone()))
-                    {
-                        Ok(req) => req,
-                        Err(e) => {
-                            let err_msg = format!("Failed to create a request. {}", e.to_string());
-
-                            error!("{}", &err_msg);
-
-                            return Err(AssistantError::Operation(err_msg));
-                        }
-                    };
-
                     info!("tries ({}) to send server info to {}", retry, &url);
-                    // send the request
-                    response = match client.request(req).await {
+
+                    // 使用 reqwest 发送请求
+                    let response = match client
+                        .post(url.to_string())
+                        .header("Content-Type", "application/json")
+                        .body(server_info_str.clone())
+                        .send()
+                        .await
+                    {
                         Ok(resp) => resp,
                         Err(e) => {
                             retry += 1;
-
                             if retry >= 3 {
                                 let err_msg = format!(
                                     "Failed to send server information to {}: {}",
-                                    &url,
-                                    e.to_string()
+                                    &url, e,
                                 );
-
                                 error!("{}", &err_msg);
-
                                 return Err(AssistantError::Operation(err_msg));
                             } else {
                                 let err_msg = format!(
                                     "Failed to send server information to {}: {}. Retrying ({})...",
-                                    &url,
-                                    e.to_string(),
-                                    retry
+                                    &url, e, retry
                                 );
-
                                 warn!("{}", &err_msg);
+                                continue;
                             }
-
-                            continue;
                         }
                     };
 
                     // check if the request was successful
-                    match response.status().is_success() {
-                        true => {
-                            info!("Server info sent to {} successfully!", &url);
+                    if response.status().is_success() {
+                        info!("Server info sent to {} successfully!", &url);
+                        break;
+                    } else {
+                        retry += 1;
+                        if retry >= 3 {
+                            error!("Failed to get server information from {}.", &url);
                             break;
-                        }
-                        false => {
-                            retry += 1;
-                            if retry >= 3 {
-                                error!("Failed to get server information from {}.", &url);
-                                break;
-                            }
                         }
                     }
                 }
@@ -692,56 +619,43 @@ unsafe impl Send for Notification {}
 unsafe impl Sync for Notification {}
 
 // Send a notification to a subscriber
-async fn push_server_health(
-    client: &Client<HttpsConnector<HttpConnector>>,
+async fn _push_server_health(
+    client: &reqwest::Client,
     url: &str,
     message: Notification,
 ) -> Result<(), AssistantError> {
     let payload = match serde_json::to_string(&message) {
         Ok(payload) => payload,
         Err(e) => {
-            let err_msg = format!("Failed to serialize the message: {}", e.to_string());
-
+            let err_msg = format!("Failed to serialize the message: {}", e);
             error!("{}", &err_msg);
-
             return Err(AssistantError::Operation(err_msg));
         }
     };
     info!("health status: {}", payload);
 
-    // create a new request
-    let req = match Request::builder()
-        .method(Method::POST)
-        .uri(url)
+    // Send POST request using reqwest
+    match client
+        .post(url)
         .header("Content-Type", "application/json")
-        .body(Body::from(payload.to_string()))
+        .body(payload)
+        .send()
+        .await
     {
-        Ok(req) => req,
-        Err(e) => {
-            let err_msg = format!("Failed to create a request: {}", e.to_string());
-
-            error!("{}", &err_msg);
-
-            return Err(AssistantError::Operation(err_msg));
-        }
-    };
-
-    match client.request(req).await {
-        Ok(resp) => match resp.status().is_success() {
-            true => {
-                info!("Server health sent to {} successfully!", url)
+        Ok(resp) => {
+            if resp.status().is_success() {
+                info!("Server health sent to {} successfully!", url);
+            } else {
+                error!(
+                    "Failed to send server health to {}. Status: {}",
+                    url,
+                    resp.status()
+                );
             }
-            false => error!(
-                "Failed to send server health to {}. Status: {}",
-                url,
-                resp.status()
-            ),
-        },
+        }
         Err(e) => {
-            let err_msg = format!("Failed to send a request: {}", e.to_string());
-
+            let err_msg = format!("Failed to send request: {}", e);
             error!("{}", &err_msg);
-
             return Err(AssistantError::Operation(err_msg));
         }
     }
@@ -751,16 +665,8 @@ async fn push_server_health(
 
 // Periodically send notifications to all subscribers
 async fn periodic_notifications(subscribers: Subscribers, interval: Interval) {
-    // let client = Client::new();
-
-    // create an HTTPS connector
-    let https = HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_only()
-        .enable_http1()
-        .build();
-
-    let client = Client::builder().build::<_, Body>(https);
+    // Create a reusable reqwest client
+    let client = reqwest::Client::new();
 
     let interval = interval.read().await;
     let mut interval = tokio::time::interval(Duration::from_secs(*interval));
@@ -777,14 +683,26 @@ async fn periodic_notifications(subscribers: Subscribers, interval: Interval) {
         let subs = subscribers.read().await;
         match subs.is_empty() {
             true => {
-                info!("Not found subsribers to notifications.");
+                info!("Not found subscribers to notifications.");
             }
             false => {
                 info!("Sending notifications to all subscribers...");
 
                 for url in subs.iter() {
-                    if let Err(e) = push_server_health(&client, url, message.clone()).await {
-                        error!("Error sending notification to {}: {}", url, e);
+                    // Send POST request using reqwest
+                    match client.post(url).json(&message).send().await {
+                        Ok(response) => {
+                            if !response.status().is_success() {
+                                error!(
+                                    "Failed to send notification to {}. Status: {}",
+                                    url,
+                                    response.status()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error sending notification to {}: {}", url, e);
+                        }
                     }
                 }
 

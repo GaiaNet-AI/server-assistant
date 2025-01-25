@@ -4,22 +4,21 @@ version = "0.4.2"
 edition = "2021"
 
 [dependencies]
-hyper = { version = "=0.14.25", features = ["full"] }
-hyper-rustls = { version = "0.24", features = ["webpki-roots", "http1", "http2"] }
-tokio = { version = "1", features = ["full"] }
-serde_json = "1.0.70"
-serde = { version = "1.0.205", features = ["derive"] }
-clap = { version = "4.4.6", features = ["cargo", "derive"] }
-thiserror = "1"
 anyhow = "1.0.80"
-once_cell = "1.18"
 chrono = { version = "0.4", features = ["alloc"] }
-regex = "1"
-log = "0.4.22"
+clap = { version = "4.4.6", features = ["cargo", "derive"] }
 env_logger = "0.11.5"
-toml = "^0.8"
-system-info-lite = { version = "0.1.1", git = "https://github.com/apepkuss/system_info.git", branch = "main" }
+log = "0.4.22"
+once_cell = "1.18"
+regex = "1"
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0.205", features = ["derive"] }
+serde_json = "1.0.70"
 sha256 = "1.5.0"
+system-info-lite = { version = "0.1.1", git = "https://github.com/apepkuss/system_info.git", branch = "main" }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "^0.8"
 
 [[bin]]
 name = "gaias"

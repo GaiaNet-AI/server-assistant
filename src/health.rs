@@ -4,7 +4,6 @@ use crate::{
 };
 use chrono::{DateTime, NaiveDateTime, Utc};
 use core::panic;
-use hyper::{Body, Client, Method, Request};
 use log::{error, info, warn};
 use regex::Regex;
 use std::{
@@ -292,7 +291,7 @@ pub(crate) async fn check_server_health(
             }
 
             // Get the current position of the cursor in the log file
-            current_position = match file.seek(SeekFrom::Current(0)) {
+            current_position = match file.stream_position() {
                 Ok(position) => position,
                 Err(e) => {
                     let err_msg = format!("Unable to get current file position: {}", e);
@@ -335,10 +334,9 @@ pub(crate) async fn check_server_health(
                                     );
 
                                     // get the body of the response in string format
-                                    match hyper::body::to_bytes(response.into_body()).await {
-                                        Ok(body_bytes) => {
-                                            let err_msg =
-                                                String::from_utf8(body_bytes.to_vec()).unwrap();
+                                    match response.text().await {
+                                        Ok(body_text) => {
+                                            let err_msg = body_text;
 
                                             warn!("{}", &err_msg);
 
@@ -593,16 +591,7 @@ pub(crate) async fn check_server_health(
         };
 
         // Check if there are new log entries
-        if latest_position > current_position {
-            can_check = true;
-        } else {
-            can_check = false;
-        }
-
-        info!(
-            "last pos: {}, latest pos: {}, can_check: {}",
-            current_position, latest_position, can_check
-        );
+        can_check = latest_position > current_position;
 
         // seek back to the last position for the next iteration
         if let Err(e) = file.seek(SeekFrom::Start(current_position)) {
@@ -616,48 +605,29 @@ pub(crate) async fn check_server_health(
 }
 
 // Send a request to the LlamaEdge API Server
-async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
-    // send a request to the LlamaEdge API Server to get the server information
+async fn ping_server() -> Result<reqwest::Response, AssistantError> {
+    info!("Ping API server");
+
     let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
     let addr = (*addr).to_string();
     let url = format!("http://{}{}", addr, "/v1/chat/completions");
 
-    let body = r###"
-    {
-        "messages": [
-            {
+    let client = reqwest::Client::new();
+
+    match client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "messages": [{
                 "role": "user",
                 "content": "Who are you? <server-health>"
-            }
-        ],
-        "model": "Phi-3-mini-4k-instruct",
-        "stream": false
-    }
-    "###;
-
-    let req = match Request::builder()
-        .method(Method::GET)
-        .uri(&url)
-        .header("Content-Type", "application/json")
-        .body(Body::from(body))
+            }],
+            "model": "Phi-3-mini-4k-instruct",
+            "stream": false
+        }))
+        .send()
+        .await
     {
-        Ok(req) => req,
-        Err(e) => {
-            let err_msg = format!(
-                "Failed to create a request for checking api-server: {}",
-                e.to_string()
-            );
-
-            error!("{}", err_msg);
-
-            return Err(AssistantError::CreateRequestError);
-        }
-    };
-
-    // Create HTTP client
-    let client = Client::new();
-
-    match client.request(req).await {
         Ok(resp) => {
             info!("Received response from the API server");
             Ok(resp)
