@@ -5,7 +5,6 @@ use crate::{
 use chrono::{DateTime, NaiveDateTime, Utc};
 use core::panic;
 use hyper::{Body, Client, Method, Request};
-use hyper_rustls::HttpsConnectorBuilder;
 use log::{error, info, warn};
 use regex::Regex;
 use std::{
@@ -655,13 +654,8 @@ async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
         }
     };
 
-    // 创建带有 rustls 的 HTTPS client
-    let https = HttpsConnectorBuilder::new()
-        .with_webpki_roots()
-        .https_only()
-        .enable_http1()
-        .build();
-    let client = Client::builder().build::<_, Body>(https);
+    // Create HTTP client
+    let client = Client::new();
 
     match client.request(req).await {
         Ok(resp) => {
