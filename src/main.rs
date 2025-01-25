@@ -7,7 +7,7 @@ use clap::Parser;
 use error::AssistantError;
 use health::{check_server_health, is_file};
 use hyper::{client::HttpConnector, Body, Client, Method, Request, Response};
-use hyper_tls::HttpsConnector;
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use log::{debug, error, info, warn};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
@@ -585,9 +585,12 @@ async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError
             let server_info = server_info.read().await;
 
             // create an HTTPS connector
-            let https = HttpsConnector::new();
+            let https = HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_only()
+                .enable_http1()
+                .build();
 
-            // send the request
             let client = Client::builder().build::<_, Body>(https);
 
             let server_info_str = match serde_json::to_string(&*server_info) {
@@ -751,9 +754,12 @@ async fn periodic_notifications(subscribers: Subscribers, interval: Interval) {
     // let client = Client::new();
 
     // create an HTTPS connector
-    let https = HttpsConnector::new();
+    let https = HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_only()
+        .enable_http1()
+        .build();
 
-    // send the request
     let client = Client::builder().build::<_, Body>(https);
 
     let interval = interval.read().await;

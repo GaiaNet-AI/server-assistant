@@ -5,6 +5,7 @@ use crate::{
 use chrono::{DateTime, NaiveDateTime, Utc};
 use core::panic;
 use hyper::{Body, Client, Method, Request};
+use hyper_rustls::HttpsConnectorBuilder;
 use log::{error, info, warn};
 use regex::Regex;
 use std::{
@@ -614,7 +615,6 @@ pub(crate) async fn check_server_health(
 async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
     info!("Ping API server");
 
-    // send a request to the LlamaEdge API Server to get the server information
     let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
     let addr = (*addr).to_string();
     let url = format!("http://{}{}", addr, "/v1/chat/completions");
@@ -632,7 +632,6 @@ async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
     }
     "###;
 
-    // create a new request
     let req = match Request::builder()
         .method(Method::GET)
         .uri(&url)
@@ -645,26 +644,27 @@ async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
                 "Failed to create a request for checking api-server: {}",
                 e.to_string()
             );
-
             error!("{}", err_msg);
-
             return Err(AssistantError::CreateRequestError);
         }
     };
 
-    // send the request
-    let client = Client::new();
+    // 创建带有 rustls 的 HTTPS client
+    let https = HttpsConnectorBuilder::new()
+        .with_webpki_roots()
+        .https_only()
+        .enable_http1()
+        .build();
+    let client = Client::builder().build::<_, Body>(https);
+
     match client.request(req).await {
         Ok(resp) => {
-            info!("Recieved response from the API server");
-
+            info!("Received response from the API server");
             Ok(resp)
         }
         Err(e) => {
             let err_msg = e.to_string();
-
             error!("{}", &err_msg);
-
             Err(AssistantError::ServerDownError(err_msg))
         }
     }
