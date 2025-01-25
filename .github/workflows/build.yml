@@ -47,6 +47,12 @@ jobs:
       - name: Install Rust-stable
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Build
+      - name: Build for Linux
+        if: matrix.os == 'ubuntu-20.04'
+        run: |
+          cargo build --release --features vendored
+
+      - name: Build for macOS
+        if: matrix.os == 'macos-13' || matrix.os == 'macos-14' || matrix.os == 'macos-15'
         run: |
           cargo build --release
