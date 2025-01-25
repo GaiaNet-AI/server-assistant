@@ -21,7 +21,7 @@ jobs:
         build: [linux-x86_64, macos-x86_64, macos-arm64]
         include:
           - build: linux-x86_64
-            os: ubuntu-latest
+            os: ubuntu-20.04
             rust: nightly
             target: x86_64-unknown-linux-gnu
             archive-name: server-assistant-x86_64-unknown-linux-gnu.tar.gz
@@ -61,7 +61,7 @@ jobs:
           rustup target add ${{ matrix.target }}
 
       - name: Build binary for Linux
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-20.04'
         run: |
           cargo build --verbose --release --target ${{ matrix.target }} --features vendored
         env:
@@ -69,7 +69,7 @@ jobs:
           RUST_BACKTRACE: 1
 
       - name: Build binary for other platforms
-        if: matrix.os != 'ubuntu-latest'
+        if: matrix.os != 'ubuntu-20.04'
         run: cargo build --verbose --release --target ${{ matrix.target }}
         env:
           RUST_BACKTRACE: 1
