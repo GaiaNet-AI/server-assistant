@@ -28,7 +28,7 @@ on:
       - '**/*.sh'
 
 jobs:
-  build-wasm:
+  build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
