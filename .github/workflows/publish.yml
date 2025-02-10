@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build: [linux-x86_64, macos-x86_64, macos-arm64]
+        build: [linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64]
         include:
           - build: linux-x86_64
             os: ubuntu-20.04
@@ -26,6 +26,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             archive-name: server-assistant-x86_64-unknown-linux-gnu.tar.gz
             bin-path: linux-x86_64-binary
+          - build: linux-aarch64
+            os: ubuntu-20.04
+            rust: nightly
+            target: aarch64-unknown-linux-gnu
+            archive-name: server-assistant-aarch64-unknown-linux-gnu.tar.gz
+            bin-path: linux-aarch64-binary
           - build: macos-x86_64
             os: macos-latest
             rust: nightly
@@ -91,7 +97,7 @@ jobs:
             7z a "${{ matrix.archive-name }}" gaias.exe
           fi
 
-          if [ "${{ matrix.build }}" = "linux-x86_64" ]; then
+          if [ "${{ matrix.build }}" = "linux-x86_64" ] || [ "${{ matrix.build }}" = "linux-aarch64" ]; then
             cp "../target/${{ matrix.target }}/release/gaias" ./
             sha256sum gaias > SHA256SUM
             echo "Debug info(SHA256SUM):"
@@ -128,6 +134,12 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          name: linux-aarch64-binary
+          path: linux-aarch64-binary
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
           name: macos-x86_64-binary
           path: macos-x86_64-binary
 
@@ -141,6 +153,7 @@ jobs:
         run: |
           ls -al
           ls -al linux-x86_64-binary
+          ls -al linux-aarch64-binary
           ls -al macos-x86_64-binary
           ls -al macos-arm64-binary
 
@@ -161,5 +174,6 @@ jobs:
           prerelease: true
           files: |
             linux-x86_64-binary/*
+            linux-aarch64-binary/*
             macos-x86_64-binary/*
             macos-arm64-binary/*
