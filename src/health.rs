@@ -127,7 +127,7 @@ pub(crate) async fn check_server_health(
 
                 return Err(AssistantError::Operation(err_msg));
             };
-            info!("Found new log messages");
+            info!("Found {} new log messages", new_lines.lines().count());
 
             // analyze the log messages and update the server health
             let mut updated = false;
@@ -205,6 +205,7 @@ pub(crate) async fn check_server_health(
 
             // ping api-server if SERVER_HEALTH is not updated
             if !updated {
+                info!("Ping API server");
                 match ping_server().await {
                     Ok(response) => {
                         if !response.status().is_success() {
@@ -325,6 +326,7 @@ pub(crate) async fn check_server_health(
                         let mut timestamp = timestamp.write().await;
                         *timestamp = Utc::now();
 
+                        info!("Ping API server");
                         match ping_server().await {
                             Ok(response) => {
                                 if !response.status().is_success() {
@@ -476,6 +478,7 @@ pub(crate) async fn check_server_health(
                         .set(RwLock::new(Utc::now()))
                         .expect("Failed to set TIMESTAMP_LAST_ACCESS_LOG");
 
+                    info!("Ping API server");
                     match ping_server().await {
                         Ok(response) => {
                             if !response.status().is_success() {
@@ -588,10 +591,6 @@ pub(crate) async fn check_server_health(
                 return Err(AssistantError::Operation(err_msg));
             }
         };
-        // warn!(
-        //     "last pos: {}, latest pos: {}",
-        //     current_position, latest_position
-        // );
 
         // Check if there are new log entries
         if latest_position > current_position {
@@ -599,6 +598,12 @@ pub(crate) async fn check_server_health(
         } else {
             can_check = false;
         }
+
+        info!(
+            "last pos: {}, latest pos: {}, can_check: {}",
+            current_position, latest_position, can_check
+        );
+
         // seek back to the last position for the next iteration
         if let Err(e) = file.seek(SeekFrom::Start(current_position)) {
             let err_msg = format!("Failed to set back the cursor to the last position: {}", e);
@@ -612,8 +617,6 @@ pub(crate) async fn check_server_health(
 
 // Send a request to the LlamaEdge API Server
 async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
-    info!("Ping API server");
-
     // send a request to the LlamaEdge API Server to get the server information
     let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
     let addr = (*addr).to_string();
@@ -652,6 +655,8 @@ async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
         }
     };
 
+    info!("Send request to {}", &url);
+
     // send the request
     let client = Client::new();
     match client.request(req).await {
@@ -663,7 +668,7 @@ async fn ping_server() -> Result<hyper::Response<Body>, AssistantError> {
         Err(e) => {
             let err_msg = e.to_string();
 
-            error!("{}", &err_msg);
+            error!("Response error: {}", &err_msg);
 
             Err(AssistantError::ServerDownError(err_msg))
         }
