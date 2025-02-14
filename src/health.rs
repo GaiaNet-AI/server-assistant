@@ -606,14 +606,11 @@ pub(crate) async fn check_server_health(
 
 // Send a request to the LlamaEdge API Server
 async fn ping_server() -> Result<reqwest::Response, AssistantError> {
-    info!("Ping API server");
-
     let addr = SERVER_SOCKET_ADDRESS.get().unwrap().read().await;
     let addr = (*addr).to_string();
     let url = format!("http://{}{}", addr, "/v1/chat/completions");
 
     let client = reqwest::Client::new();
-
     match client
         .post(&url)
         .header("Content-Type", "application/json")
