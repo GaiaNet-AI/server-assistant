@@ -553,7 +553,7 @@ async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError
                 }
             };
 
-            // 使用 reqwest 创建客户端
+            // Create a client using reqwest
             let client = reqwest::Client::new();
 
             for url in subs.iter() {
@@ -563,7 +563,7 @@ async fn push_server_info(subscribers: Subscribers) -> Result<(), AssistantError
                 loop {
                     info!("tries ({}) to send server info to {}", retry, &url);
 
-                    // 使用 reqwest 发送请求
+                    // send request using reqwest
                     let response = match client
                         .post(url.to_string())
                         .header("Content-Type", "application/json")
