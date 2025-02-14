@@ -63,7 +63,7 @@ jobs:
         if: matrix.build == 'linux-x86_64' || matrix.build == 'linux-aarch64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev pkg-config
+          sudo apt-get install -y build-essential pkg-config
           rustup target add ${{ matrix.target }}
           rustup target list --installed
 
@@ -71,19 +71,19 @@ jobs:
         if: matrix.build == 'linux-aarch64'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc
 
       - name: Build binary for Linux
         if: matrix.os == 'ubuntu-22.04'
         run: |
-          cargo build --verbose --release --target ${{ matrix.target }} --features vendored
+          cargo build --release --target ${{ matrix.target }} --features vendored
         env:
           OPENSSL_STATIC: 1
           RUST_BACKTRACE: 1
 
       - name: Build binary for other platforms
         if: matrix.os != 'ubuntu-22.04'
-        run: cargo build --verbose --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
         env:
           RUST_BACKTRACE: 1
 
